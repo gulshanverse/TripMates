@@ -9,5 +9,4 @@ ALTER TABLE travel_connections
 -- The existing pair unique key remains the idempotency guard. These indexes keep
 -- incoming/outgoing lifecycle queries bounded as the table grows.
 ALTER TABLE travel_connections
-  ADD INDEX travel_connections_receiver_status_idx (receiver_id, status),
   ADD INDEX travel_connections_sender_status_idx (sender_id, status);
