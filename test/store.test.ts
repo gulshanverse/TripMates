@@ -50,3 +50,15 @@ test('organizer ownership, duplicate requests, approval, and capacity are enforc
   const full = await store.requestJoin(trip.id, intruder.id);
   assert.equal(full.error, 'full');
 });
+
+test('approved join requests cannot be approved or rejected a second time', async () => {
+  const store = await readyStore();
+  const owner = await user(store, 'owner-race@example.com', 'Race Owner');
+  const guest = await user(store, 'guest-race@example.com', 'Race Guest');
+  const trip = await store.createTrip(owner, { destinationId: 'rishikesh', title: 'Race-safe trip', summary: 'A trip for lifecycle regression coverage.', startDate: 'Nov 01', endDate: 'Nov 03', duration: '3 days', budget: 9000, capacity: 2, style: 'Adventure', imageUrl: 'https://example.com/trip.jpg' });
+  assert.ok(trip);
+  const request = await store.requestJoin(trip.id, guest.id);
+  assert.ok('request' in request);
+  assert.equal((await store.updateJoinRequest(request.request.id, owner.id, 'approved')).request?.status, 'approved');
+  assert.equal((await store.updateJoinRequest(request.request.id, owner.id, 'rejected')).error, 'not_found');
+});
