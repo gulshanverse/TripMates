@@ -57,13 +57,14 @@ integration('persists core journeys and enforces MySQL authorization and capacit
   const travel = new TravelStore();
   const messaging = new MessagingStore();
   const moderation = new ModerationStore();
-  await travel.initialize();
-  await messaging.initialize();
-  await moderation.initialize();
-  travel.setNotifier((userId, type, body, actorId, entityId, dedupeKey) => messaging.addNotification(userId, type, body, actorId, entityId, dedupeKey));
-  moderation.setNotifier((userId, type, body, actorId, entityId, dedupeKey) => messaging.addNotification(userId, type, body, actorId, entityId, dedupeKey));
-  messaging.setConnectionAuthorizer((a, b) => travel.areConnected(a, b));
-  messaging.setRestrictionChecker((userId) => moderation.hasRestriction(userId, 'messaging'));
+  try {
+    await travel.initialize();
+    await messaging.initialize();
+    await moderation.initialize();
+    travel.setNotifier((userId, type, body, actorId, entityId, dedupeKey) => messaging.addNotification(userId, type, body, actorId, entityId, dedupeKey));
+    moderation.setNotifier((userId, type, body, actorId, entityId, dedupeKey) => messaging.addNotification(userId, type, body, actorId, entityId, dedupeKey));
+    messaging.setConnectionAuthorizer((a, b) => travel.areConnected(a, b));
+    messaging.setRestrictionChecker((userId) => moderation.hasRestriction(userId, 'messaging'));
 
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const owner = await travel.register(`mysql-owner-${suffix}@example.com`, 'correct-horse-battery', 'MySQL Owner');
@@ -119,17 +120,21 @@ integration('persists core journeys and enforces MySQL authorization and capacit
   assert.equal((await moderation.submitVerification(guest.id)).status, 'pending');
   assert.equal((await moderation.reviewVerification(owner.id, guest.id, 'verified')).status, 'verified');
   assert.equal((await moderation.auditLog(owner.id)).entries.length > 0, true);
-  await Promise.all([travel.close(), messaging.close(), moderation.close()]);
+  } finally {
+    const closeResults = await Promise.allSettled([travel.close(), messaging.close(), moderation.close()]);
+    const closeErrors = closeResults.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map((result) => result.reason);
+    if (closeErrors.length) throw new AggregateError(closeErrors, 'Failed to close MySQL integration-test stores.');
+  }
 });
 
 integration('persists immutable completion evidence and permits one eligible organizer review', async () => {
   process.env.NODE_ENV = 'test';
   process.env.ALLOW_MEMORY_FALLBACK = 'false';
   const travel = new TravelStore();
-  await travel.initialize();
-  await reviewsStore.initialize();
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
+    await travel.initialize();
+    await reviewsStore.initialize();
     const owner = await travel.register(`mysql-review-owner-${suffix}@example.com`, 'correct-horse-battery', 'MySQL Review Owner');
     const guest = await travel.register(`mysql-review-guest-${suffix}@example.com`, 'correct-horse-battery', 'MySQL Review Guest');
     assert.ok(owner && guest);
