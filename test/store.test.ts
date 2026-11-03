@@ -62,3 +62,22 @@ test('approved join requests cannot be approved or rejected a second time', asyn
   assert.equal((await store.updateJoinRequest(request.request.id, owner.id, 'approved')).request?.status, 'approved');
   assert.equal((await store.updateJoinRequest(request.request.id, owner.id, 'rejected')).error, 'not_found');
 });
+
+test('structured trips support drafts, guarded lifecycle transitions, and participant cancellation', async () => {
+  const store = await readyStore();
+  const owner = await user(store, 'lifecycle-owner@example.com', 'Lifecycle Owner');
+  const guest = await user(store, 'lifecycle-guest@example.com', 'Lifecycle Guest');
+  const trip = await store.createTrip(owner, {
+    destinationId: 'rishikesh', title: 'Structured river weekend', summary: 'A detailed trip with a clear meeting point and preparation notes.', startDate: 'Dec 01', endDate: 'Dec 03', duration: '3 days', budget: 12000, capacity: 3, minParticipants: 2, style: 'Adventure', imageUrl: 'https://example.com/trip.jpg', status: 'draft', meetingPoint: 'Rishikesh railway station', includedItems: ['Local guide'], excludedItems: ['Travel to Rishikesh'], requiredEquipment: ['Walking shoes'], itinerary: [{ day: 'Day 1', title: 'Arrive and orient', detail: 'Meet the group and settle in.' }], budgetBreakdown: [{ label: 'Stay', amount: 4000, confirmed: false }], preparationGuidance: 'Bring a reusable bottle.', cancellationPolicy: 'Cancel before departure for organizer review.', participationPolicy: 'Respect the group pace and local guidance.',
+  });
+  assert.equal(trip?.status, 'draft');
+  assert.equal((await store.requestJoin(trip!.id, guest.id)).error, 'unavailable');
+  assert.equal((await store.transitionTrip(trip!.id, guest.id, 'published')).error, 'forbidden');
+  assert.equal((await store.transitionTrip(trip!.id, owner.id, 'published')).status, 'published');
+  assert.equal((await store.transitionTrip(trip!.id, owner.id, 'completed')).error, 'invalid_transition');
+  const request = await store.requestJoin(trip!.id, guest.id);
+  assert.ok('request' in request);
+  assert.equal((await store.updateJoinRequest(request.request.id, owner.id, 'approved')).request?.status, 'approved');
+  assert.equal(await store.cancelParticipation(trip!.id, guest.id), true);
+  assert.equal((await store.transitionTrip(trip!.id, owner.id, 'cancelled')).status, 'cancelled');
+});

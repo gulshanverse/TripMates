@@ -1,4 +1,5 @@
 export type TravelStyle = 'Slow & scenic' | 'Adventure' | 'Culture-led' | 'Wellness';
+export type TripStatus = 'draft' | 'published' | 'full' | 'ongoing' | 'completed' | 'cancelled';
 
 export interface Destination {
   id: string;
@@ -32,6 +33,16 @@ export interface Trip {
   imageUrl: string;
   summary: string;
   itinerary: { day: string; title: string; detail: string }[];
+  status?: TripStatus;
+  minParticipants?: number;
+  meetingPoint?: string;
+  budgetBreakdown?: { label: string; amount: number; confirmed: boolean }[];
+  includedItems?: string[];
+  excludedItems?: string[];
+  requiredEquipment?: string[];
+  preparationGuidance?: string;
+  cancellationPolicy?: string;
+  participationPolicy?: string;
   saved?: boolean;
 }
 
