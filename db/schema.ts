@@ -29,6 +29,8 @@ export const trips = mysqlTable('trips', {
   organizerInitials: varchar('organizer_initials', { length: 4 }).notNull(),
   organizerVerified: boolean('organizer_verified').notNull().default(false),
   style: varchar('style', { length: 60 }).notNull(),
+  experienceType: varchar('experience_type', { length: 80 }),
+  tags: json('tags').notNull().default([]),
   imageUrl: varchar('image_url', { length: 500 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({ destinationIdx: index('trips_destination_idx').on(table.destinationId), datesIdx: index('trips_dates_idx').on(table.startDate, table.endDate), organizerIdx: index('trips_organizer_user_idx').on(table.organizerUserId) }));

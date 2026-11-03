@@ -19,10 +19,10 @@ if (!url) {
     }
     for (const trip of trips) {
       await connection.execute(
-        `INSERT INTO trips (id,destination_id,title,summary,start_date,end_date,duration,budget,currency,members,capacity,organizer,organizer_initials,organizer_verified,style,image_url)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON DUPLICATE KEY UPDATE destination_id=VALUES(destination_id),title=VALUES(title),summary=VALUES(summary),start_date=VALUES(start_date),end_date=VALUES(end_date),duration=VALUES(duration),budget=VALUES(budget),currency=VALUES(currency),members=VALUES(members),capacity=VALUES(capacity),organizer=VALUES(organizer),organizer_initials=VALUES(organizer_initials),organizer_verified=VALUES(organizer_verified),style=VALUES(style),image_url=VALUES(image_url)`,
-        [trip.id, trip.destinationId, trip.title, trip.summary, trip.startDate, trip.endDate, trip.duration, trip.budget, trip.currency, trip.members, trip.capacity, trip.organizer, trip.organizerInitials, trip.organizerVerified, trip.style, trip.imageUrl],
+        `INSERT INTO trips (id,destination_id,title,summary,start_date,end_date,duration,budget,currency,members,capacity,organizer,organizer_initials,organizer_verified,style,experience_type,tags,image_url)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE destination_id=VALUES(destination_id),title=VALUES(title),summary=VALUES(summary),start_date=VALUES(start_date),end_date=VALUES(end_date),duration=VALUES(duration),budget=VALUES(budget),currency=VALUES(currency),members=VALUES(members),capacity=VALUES(capacity),organizer=VALUES(organizer),organizer_initials=VALUES(organizer_initials),organizer_verified=VALUES(organizer_verified),style=VALUES(style),experience_type=VALUES(experience_type),tags=VALUES(tags),image_url=VALUES(image_url)`,
+        [trip.id, trip.destinationId, trip.title, trip.summary, trip.startDate, trip.endDate, trip.duration, trip.budget, trip.currency, trip.members, trip.capacity, trip.organizer, trip.organizerInitials, trip.organizerVerified, trip.style, trip.experienceType ?? null, JSON.stringify(trip.tags), trip.imageUrl],
       );
     }
     console.log('TripMates editorial fixtures written to the configured database.');
