@@ -8,6 +8,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       NODE_ENV: test
       ALLOW_MEMORY_FALLBACK: 'true'
@@ -32,13 +33,21 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Run unit tests
+        run: pnpm test
+        timeout-minutes: 10
         env:
           DATABASE_URL: ''
           ALLOW_MEMORY_FALLBACK: 'true'
-      - run: pnpm db:push
-      - run: pnpm db:seed
+      - name: Apply database migrations
+        run: pnpm db:push
+        timeout-minutes: 5
+      - name: Seed database
+        run: pnpm db:seed
+        timeout-minutes: 5
       - name: Verify migration ledger is stable on second run
         run: |
           before=$(mysql --protocol=tcp -h 127.0.0.1 -utripmates -ptripmates tripmates_test -Nse 'SELECT COUNT(*) FROM schema_migrations')
@@ -46,12 +55,31 @@ jobs:
           after=$(mysql --protocol=tcp -h 127.0.0.1 -utripmates -ptripmates tripmates_test -Nse 'SELECT COUNT(*) FROM schema_migrations')
           test "$before" = "$after"
           ! printf '%s' "$output" | grep -q 'Applied '
-      - run: pnpm test:mysql
-      - run: pnpm test:restart
-      - run: pnpm check
-      - run: pnpm build
-      - run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 5
+      - name: Run MySQL integration tests
+        run: |
+          set +e
+          timeout --foreground --signal=TERM --kill-after=30s 10m pnpm test:mysql
+          status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "::error::MySQL integration tests exceeded the 10-minute limit; inspect database queries and test cleanup."
+          fi
+          exit "$status"
+        timeout-minutes: 11
+      - name: Verify restart persistence
+        run: pnpm test:restart
+        timeout-minutes: 5
+      - name: TypeScript check
+        run: pnpm check
+        timeout-minutes: 10
+      - name: Production build
+        run: pnpm build
+        timeout-minutes: 10
+      - name: Install Playwright browser dependencies
+        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 15
       - name: Run browser acceptance tests
         run: pnpm test:e2e
+        timeout-minutes: 15
         env:
           ALLOW_MEMORY_FALLBACK: 'false'
