@@ -1,19 +1,30 @@
 name: TripMates CI
-
 on:
   push:
     branches: [main, 'feature/**']
   pull_request:
-
 permissions:
   contents: read
-
 jobs:
   verify:
     runs-on: ubuntu-latest
     env:
       NODE_ENV: test
       ALLOW_MEMORY_FALLBACK: 'true'
+      DATABASE_URL: mysql://tripmates:tripmates@127.0.0.1:3306/tripmates_test
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: tripmates_test
+          MYSQL_USER: tripmates
+          MYSQL_PASSWORD: tripmates
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -utripmates -ptripmates"
+          --health-interval=10s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -23,5 +34,24 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+        env:
+          DATABASE_URL: ''
+          ALLOW_MEMORY_FALLBACK: 'true'
+      - run: pnpm db:push
+      - run: pnpm db:seed
+      - name: Verify migration ledger is stable on second run
+        run: |
+          before=$(mysql --protocol=tcp -h 127.0.0.1 -utripmates -ptripmates tripmates_test -Nse 'SELECT COUNT(*) FROM schema_migrations')
+          output=$(pnpm db:push)
+          after=$(mysql --protocol=tcp -h 127.0.0.1 -utripmates -ptripmates tripmates_test -Nse 'SELECT COUNT(*) FROM schema_migrations')
+          test "$before" = "$after"
+          ! printf '%s' "$output" | grep -q 'Applied '
+      - run: pnpm test:mysql
+      - run: pnpm test:restart
       - run: pnpm check
       - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Run browser acceptance tests
+        run: pnpm test:e2e
+        env:
+          ALLOW_MEMORY_FALLBACK: 'false'

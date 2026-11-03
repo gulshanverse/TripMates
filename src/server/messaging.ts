@@ -72,6 +72,7 @@ export class MessagingStore {
   private async notifyParticipants(conversationId: string, senderId: string, message: Message) { const participants = this.pool ? (await this.db().query<RowDataPacket[]>('SELECT user_id FROM conversation_participants WHERE conversation_id=? AND user_id<>? AND removed_at IS NULL', [conversationId,senderId]))[0].map((r) => String(r.user_id)) : [...(this.conversations.get(conversationId)?.participants ?? [])].filter((id) => id !== senderId); for (const userId of participants) await this.addNotification(userId, 'new_message', 'You have a new TripMates message', senderId, conversationId, `message:${message.id}:${userId}`); }
   subscribe(conversationId: string, response: Response) { const set = this.streams.get(conversationId) ?? new Set<Response>(); set.add(response); this.streams.set(conversationId, set); response.on('close', () => set.delete(response)); }
   private broadcast(conversationId: string, payload: unknown) { for (const response of this.streams.get(conversationId) ?? []) response.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`); }
+  async close(){if(this.pool){await this.pool.end();this.pool=null;}}
   get persistenceMode() { return this.pool ? 'managed-database' : this.memory ? 'explicit-development-memory' : 'uninitialized'; }
 }
 export const messagingStore = new MessagingStore();
