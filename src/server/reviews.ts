@@ -96,7 +96,12 @@ export class ReviewsStore {
     if (this.pool) {
       const [reviewRows] = await this.db().query<RowDataPacket[]>('SELECT id FROM organizer_reviews WHERE id=? AND organizer_id=? AND moderation_status=\'visible\'', [reviewId,organizerId]);
       if (!reviewRows[0]) return { error: 'forbidden' as const };
-      await this.db().query('INSERT INTO organizer_review_responses (id,review_id,organizer_id,response) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE response=VALUES(response)', [randomUUID(),reviewId,organizerId,body]);
+      const [existingRows] = await this.db().query<RowDataPacket[]>('SELECT id FROM organizer_review_responses WHERE review_id=?', [reviewId]);
+      const responseId = existingRows[0]?.id ? String(existingRows[0].id) : randomUUID();
+      const action = existingRows[0] ? 'edited' : 'created';
+      if (existingRows[0]) await this.db().query('UPDATE organizer_review_responses SET response=? WHERE review_id=?', [body,reviewId]);
+      else await this.db().query('INSERT INTO organizer_review_responses (id,review_id,organizer_id,response) VALUES (?,?,?,?)', [responseId,reviewId,organizerId,body]);
+      await this.db().query('INSERT INTO organizer_review_response_audit (id,response_id,review_id,editor_id,action,response) VALUES (?,?,?,?,?,?)', [randomUUID(),responseId,reviewId,organizerId,action,body]);
       return { ok: true };
     }
     const review = this.reviews.get(reviewId); if (!review || review.organizerId !== organizerId || review.status !== 'visible') return { error: 'forbidden' as const };

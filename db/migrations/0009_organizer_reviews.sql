@@ -43,6 +43,19 @@ CREATE TABLE IF NOT EXISTS organizer_review_responses (
   CONSTRAINT organizer_review_responses_organizer_fk FOREIGN KEY (organizer_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS organizer_review_response_audit (
+  id VARCHAR(36) PRIMARY KEY,
+  response_id VARCHAR(36) NOT NULL,
+  review_id VARCHAR(36) NOT NULL,
+  editor_id VARCHAR(36) NOT NULL,
+  action ENUM('created','edited') NOT NULL,
+  response VARCHAR(2000) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT organizer_review_response_audit_response_fk FOREIGN KEY (response_id) REFERENCES organizer_review_responses(id),
+  CONSTRAINT organizer_review_response_audit_review_fk FOREIGN KEY (review_id) REFERENCES organizer_reviews(id),
+  CONSTRAINT organizer_review_response_audit_editor_fk FOREIGN KEY (editor_id) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS organizer_review_reports (
   id VARCHAR(36) PRIMARY KEY,
   review_id VARCHAR(36) NOT NULL,
