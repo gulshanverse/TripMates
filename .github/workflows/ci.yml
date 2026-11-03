@@ -5,9 +5,13 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: tripmates-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       NODE_ENV: test
       ALLOW_MEMORY_FALLBACK: 'true'
@@ -46,11 +50,18 @@ jobs:
           after=$(mysql --protocol=tcp -h 127.0.0.1 -utripmates -ptripmates tripmates_test -Nse 'SELECT COUNT(*) FROM schema_migrations')
           test "$before" = "$after"
           ! printf '%s' "$output" | grep -q 'Applied '
-      - run: pnpm test:mysql
+      - name: Run MySQL integration tests without repeating migration setup
+        run: node --import tsx --test test/mysql.integration.test.ts
       - run: pnpm test:restart
       - run: pnpm check
       - run: pnpm build
-      - run: pnpm exec playwright install --with-deps chromium
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install Playwright Chromium when not cached
+        run: pnpm exec playwright install chromium
       - name: Run browser acceptance tests
         run: pnpm test:e2e
         env:
