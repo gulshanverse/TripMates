@@ -4,6 +4,7 @@ import mysql, { type RowDataPacket } from 'mysql2/promise';
 import { TravelStore } from '../src/server/store';
 import { MessagingStore } from '../src/server/messaging';
 import { ModerationStore } from '../src/server/moderation';
+import { reviewsStore } from '../src/server/reviews';
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl ? test : test.skip;
@@ -119,4 +120,40 @@ integration('persists core journeys and enforces MySQL authorization and capacit
   assert.equal((await moderation.reviewVerification(owner.id, guest.id, 'verified')).status, 'verified');
   assert.equal((await moderation.auditLog(owner.id)).entries.length > 0, true);
   await Promise.all([travel.close(), messaging.close(), moderation.close()]);
+});
+
+integration('persists immutable completion evidence and permits one eligible organizer review', async () => {
+  process.env.NODE_ENV = 'test';
+  process.env.ALLOW_MEMORY_FALLBACK = 'false';
+  const travel = new TravelStore();
+  await travel.initialize();
+  await reviewsStore.initialize();
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    const owner = await travel.register(`mysql-review-owner-${suffix}@example.com`, 'correct-horse-battery', 'MySQL Review Owner');
+    const guest = await travel.register(`mysql-review-guest-${suffix}@example.com`, 'correct-horse-battery', 'MySQL Review Guest');
+    assert.ok(owner && guest);
+    const trip = await travel.createTrip(owner, { destinationId: 'rishikesh', title: `MySQL review ${suffix}`, summary: 'A completed trip for review eligibility integration coverage.', startDate: 'Nov 01', endDate: 'Nov 03', duration: '3 days', budget: 9000, capacity: 2, style: 'Adventure', imageUrl: 'https://example.com/mysql-review.jpg' });
+    assert.ok(trip);
+    const request = await travel.requestJoin(trip.id, guest.id);
+    assert.ok('request' in request);
+    assert.equal((await travel.updateJoinRequest(request.request.id, owner.id, 'approved')).request?.status, 'approved');
+    assert.equal((await reviewsStore.createReview(guest.id, trip.id, { overallRating: 5, tripExperienceRating: 5, organizerExperienceRating: 4, feedback: 'Persisted review.' })).error, 'not_eligible');
+    await travel.transitionTrip(trip.id, owner.id, 'ongoing');
+    assert.equal((await travel.transitionTrip(trip.id, owner.id, 'completed')).status, 'completed');
+    const created = await reviewsStore.createReview(guest.id, trip.id, { overallRating: 5, tripExperienceRating: 5, organizerExperienceRating: 4, feedback: 'Persisted review.' });
+    assert.ok('review' in created);
+    assert.equal((await reviewsStore.createReview(guest.id, trip.id, { overallRating: 5, tripExperienceRating: 5, organizerExperienceRating: 4 })).error, 'duplicate');
+    const db = await mysql.createConnection(databaseUrl!);
+    try {
+      const [evidence] = await db.query<RowDataPacket[]>('SELECT participant_id,completed_at FROM trip_completion_evidence WHERE trip_id=?', [trip.id]);
+      const [rows] = await db.query<RowDataPacket[]>('SELECT trip_id,reviewer_id,organizer_id,moderation_status FROM organizer_reviews WHERE trip_id=?', [trip.id]);
+      assert.deepEqual(evidence.map((row) => String(row.participant_id)), [guest.id]);
+      assert.deepEqual(rows.map((row) => ({ trip_id: String(row.trip_id), reviewer_id: String(row.reviewer_id), organizer_id: String(row.organizer_id), moderation_status: String(row.moderation_status) })), [{ trip_id: trip.id, reviewer_id: guest.id, organizer_id: owner.id, moderation_status: 'visible' }]);
+    } finally {
+      await db.end();
+    }
+  } finally {
+    await Promise.all([travel.close(), reviewsStore.close()]);
+  }
 });
