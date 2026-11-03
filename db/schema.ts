@@ -63,3 +63,11 @@ export const tripJoinRequests = mysqlTable('trip_join_requests', {
 }, (table) => ({ tripStatusIdx: index('trip_join_requests_trip_status_idx').on(table.tripId, table.status) }));
 
 export const tripParticipants = mysqlTable('trip_participants', { tripId: varchar('trip_id', { length: 64 }).notNull(), userId: varchar('user_id', { length: 36 }).notNull(), joinedAt: timestamp('joined_at').defaultNow().notNull() });
+
+export const conversations = mysqlTable('conversations', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  kind: mysqlEnum('kind', ['connection', 'trip']).notNull().default('connection'),
+  createdBy: varchar('created_by', { length: 36 }).notNull(),
+  tripId: varchar('trip_id', { length: 64 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});

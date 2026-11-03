@@ -81,3 +81,23 @@ test('structured trips support drafts, guarded lifecycle transitions, and partic
   assert.equal(await store.cancelParticipation(trip!.id, guest.id), true);
   assert.equal((await store.transitionTrip(trip!.id, owner.id, 'cancelled')).status, 'cancelled');
 });
+
+test('pending approval is rejected after a trip completes or is cancelled', async () => {
+  const store = await readyStore();
+  const owner = await user(store, 'closed-owner@example.com', 'Closed Owner');
+  const guest = await user(store, 'closed-guest@example.com', 'Closed Guest');
+  const completedTrip = await store.createTrip(owner, { destinationId: 'rishikesh', title: 'Completed trip', summary: 'A trip that closes before approval.', startDate: 'Jan 01', endDate: 'Jan 03', duration: '3 days', budget: 9000, capacity: 3, style: 'Adventure', imageUrl: 'https://example.com/completed.jpg' });
+  assert.ok(completedTrip);
+  const completedRequest = await store.requestJoin(completedTrip.id, guest.id);
+  assert.ok('request' in completedRequest);
+  assert.equal((await store.transitionTrip(completedTrip.id, owner.id, 'ongoing')).status, 'ongoing');
+  assert.equal((await store.transitionTrip(completedTrip.id, owner.id, 'completed')).status, 'completed');
+  assert.equal((await store.updateJoinRequest(completedRequest.request.id, owner.id, 'approved')).error, 'unavailable');
+
+  const cancelledTrip = await store.createTrip(owner, { destinationId: 'rishikesh', title: 'Cancelled trip', summary: 'A trip that is cancelled before approval.', startDate: 'Feb 01', endDate: 'Feb 03', duration: '3 days', budget: 9000, capacity: 3, style: 'Adventure', imageUrl: 'https://example.com/cancelled.jpg' });
+  assert.ok(cancelledTrip);
+  const cancelledRequest = await store.requestJoin(cancelledTrip.id, guest.id);
+  assert.ok('request' in cancelledRequest);
+  assert.equal((await store.transitionTrip(cancelledTrip.id, owner.id, 'cancelled')).status, 'cancelled');
+  assert.equal((await store.updateJoinRequest(cancelledRequest.request.id, owner.id, 'approved')).error, 'unavailable');
+});
