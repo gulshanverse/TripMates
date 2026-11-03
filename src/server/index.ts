@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
 import { z } from 'zod';
 import { travelStore } from './store';
+import { messagingStore } from './messaging';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -28,6 +29,7 @@ const tripPatch = tripBody.omit({ destinationId: true, imageUrl: true }).partial
 
 async function start() {
   await travelStore.initialize();
+  await messagingStore.initialize();
   const app = express(); app.disable('x-powered-by'); app.use(express.json({ limit: '250kb' }));
   app.use((_req, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin'); res.setHeader('X-Frame-Options', 'DENY'); next(); });
   app.get('/api/health', (_req, res) => res.json({ ok: true, persistence: travelStore.persistenceMode }));
@@ -51,6 +53,16 @@ async function start() {
   app.get('/api/buddies', async (req, res) => res.json(await travelStore.listBuddies(getVisitorId(req, res))));
   app.post('/api/buddies/:buddyId/interest', async (req, res) => { const user = await currentUser(req); const actor = user?.id ?? getVisitorId(req, res); const parsed = idSchema.safeParse(req.params.buddyId); if (!parsed.success) return res.status(400).json({ message: 'Invalid buddy id' }); const interested = await travelStore.expressInterest(parsed.data, actor); return interested ? res.status(201).json({ interested: true, buddyId: parsed.data, status: 'pending' }) : res.status(404).json({ message: 'Traveler not found' }); });
   app.delete('/api/buddies/:buddyId/interest', async (req, res) => { const user = await requireUser(req, res); if (!user) return; return await travelStore.cancelInterest(req.params.buddyId, user.id) ? res.status(204).end() : res.status(404).json({ message: 'Pending interest not found' }); });
+  const conversationBody = z.object({ participantIds: z.array(idSchema).min(1).max(19), kind: z.enum(['connection', 'trip']).default('connection') });
+  app.post('/api/conversations', async (req, res) => { const user = await requireUser(req, res); if (!user) return; const parsed = conversationBody.safeParse(req.body); if (!parsed.success) return res.status(400).json({ message: 'Invalid conversation details' }); const result = await messagingStore.createConversation(user.id, parsed.data.participantIds, parsed.data.kind); if ('error' in result) return res.status(result.error === 'forbidden' ? 403 : 409).json({ message: result.error }); return res.status(201).json(result); });
+  app.get('/api/conversations', async (req, res) => { const user = await requireUser(req, res); if (!user) return; return res.json({ conversations: await messagingStore.listConversations(user.id) }); });
+  app.get('/api/conversations/:conversationId/messages', async (req, res) => { const user = await requireUser(req, res); if (!user) return; const result = await messagingStore.listMessages(req.params.conversationId, user.id, typeof req.query.before === 'string' ? req.query.before : undefined, Number(req.query.limit) || 50); return 'error' in result ? res.status(403).json({ message: 'Conversation access denied' }) : res.json(result); });
+  app.post('/api/conversations/:conversationId/messages', async (req, res) => { const user = await requireUser(req, res); if (!user) return; const parsed = z.object({ body: z.string().trim().min(1).max(4000) }).safeParse(req.body); if (!parsed.success) return res.status(400).json({ message: 'Message must be 1–4000 characters' }); const result = await messagingStore.sendMessage(req.params.conversationId, user.id, parsed.data.body); return 'error' in result ? res.status(result.error === 'forbidden' ? 403 : 400).json({ message: result.error }) : res.status(201).json(result); });
+  app.post('/api/conversations/:conversationId/read', async (req, res) => { const user = await requireUser(req, res); if (!user) return; const ok = await messagingStore.markRead(req.params.conversationId, user.id, typeof req.body?.messageId === 'string' ? req.body.messageId : undefined); return ok ? res.status(204).end() : res.status(403).json({ message: 'Conversation access denied' }); });
+  app.get('/api/conversations/:conversationId/events', async (req, res) => { const user = await requireUser(req, res); if (!user) return; if (!(await messagingStore.isParticipant(req.params.conversationId, user.id))) return res.status(403).json({ message: 'Conversation access denied' }); res.status(200).set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }); res.write(': connected\n\n'); messagingStore.subscribe(req.params.conversationId, res); });
+  app.get('/api/notifications', async (req, res) => { const user = await requireUser(req, res); if (!user) return; const unreadOnly = req.query.unread === 'true'; return res.json({ notifications: await messagingStore.listNotifications(user.id, unreadOnly), unreadCount: await messagingStore.unreadCount(user.id) }); });
+  app.post('/api/notifications/read', async (req, res) => { const user = await requireUser(req, res); if (!user) return; await messagingStore.markNotificationsRead(user.id, typeof req.body?.notificationId === 'string' ? req.body.notificationId : undefined); return res.status(204).end(); });
+  app.post('/api/users/:userId/block', async (req, res) => { const user = await requireUser(req, res); if (!user) return; if (user.id === req.params.userId) return res.status(400).json({ message: 'Cannot block yourself' }); await messagingStore.block(user.id, req.params.userId); return res.status(204).end(); });
 
   const publicDir = path.join(root, 'public'); app.use(express.static(publicDir)); const isProduction = process.env.NODE_ENV === 'production';
   if (!isProduction) { const vite = await createViteServer({ root: path.join(root, 'src/client'), server: { middlewareMode: true }, appType: 'spa' }); app.use(vite.middlewares); app.use(async (req, res, next) => { if (req.method !== 'GET' || req.path.startsWith('/api/')) return next(); try { const template = fs.readFileSync(path.join(root, 'src/client/index.html'), 'utf-8'); const html = await vite.transformIndexHtml(req.originalUrl, template); res.status(200).set({ 'Content-Type': 'text/html' }).end(html); } catch (error) { vite.ssrFixStacktrace(error as Error); next(error); } }); } else { app.use(express.static(path.join(root, 'dist'))); app.use((req, res, next) => req.method === 'GET' ? res.sendFile(path.join(root, 'dist/index.html')) : next()); }
