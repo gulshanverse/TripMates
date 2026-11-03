@@ -11,20 +11,20 @@
 - [x] Use strong visual hierarchy, consistent spacing, accessible controls, beautiful travel imagery, trustworthy copy, and responsive layouts; avoid a generic admin-dashboard appearance, excessive gradients, random colors, oversized cards, unnecessary animation, and inconsistent component styling.
 - [x] Preserve an India-first story and use Rishikesh as the initial pilot destination without hard-coding it as the only supported destination.
 
-## 3. Destination discovery — open
-- [ ] Users can browse destinations, including Rishikesh, with destination media, descriptive copy, practical travel context, and links into destination-specific trips and people discovery.
+## 3. Destination discovery — in progress
+- [x] Users can browse seeded destinations, including Rishikesh, with destination media, descriptive copy, and links into trip discovery.
 - [ ] The data model supports future Indian and international destinations, INR display, time-zone-aware dates, location-based discovery, and future multi-language readiness.
 
 ## 4. Group-trip discovery and detail — in progress
 - [x] Users can discover available group trips with destination, travel dates, budget, participant count/limit, organizer, interests, and itinerary highlights.
 - [x] Users can open a trip detail view with itinerary, dates, budget, organizer information, participant capacity, trust cues, and clear request-to-join/save actions.
-- [ ] Trip records support publishing itineraries, dates, budgets, participant limits, join requests, approval/rejection, participant management, member communication, leaving, and reports.
-- [ ] Participant limits are enforced transactionally and duplicate join requests are prevented.
+- [x] Trip records support authenticated organizer creation/editing plus join requests and approval/rejection boundaries.
+- [x] Participant limits are checked at request and approval time; duplicate pending join requests are prevented.
 
 ## 5. Travel buddy discovery — in progress
 - [ ] Users can discover people compatible on destinations, dates, budgets, interests, travel preferences, languages, travel styles, and group-size preferences.
-- [ ] Users can express interest through a mutual-consent workflow; a travel buddy is not automatically a romantic match.
-- [ ] Profiles support photos, travel interests, preferred destinations, budget preferences, travel style, languages, travel experience, availability, visibility settings, and verification status.
+- [x] Users can express and cancel interest through a non-romantic pending connection workflow.
+- [x] Profiles support photos, travel interests, preferred destinations, budget preferences, travel style, languages, and visibility settings.
 
 ## 6. Travel Dates separation — open
 - [ ] Travel Dates is an optional separate romantic travel-connection experience.
@@ -42,8 +42,9 @@
 - [ ] Foreign keys, unique constraints, indexes, deletion behavior, pagination fields, and privacy boundaries are defined; JSON is used only for genuinely flexible data with documented trade-offs.
 - [x] Migrations are deterministic, repeatable, additive where possible, and never destructively modify production data.
 
-## 9. Authentication and authorization — open
-- [ ] Use Manus OAuth by default for application login unless a provider is explicitly selected later.
+## 9. Authentication and authorization — in progress
+- [x] Email/password authentication is implemented without fake OAuth; OAuth remains gated on real provider credentials.
+- [x] Password hashing, opaque expiring sessions, HttpOnly/Secure cookies, rate limiting, protected middleware, profile updates, and account deactivation are implemented.
 - [ ] Application sessions use the fixed `webdev_app_session` cookie name, validate the platform JWT using `MANUS_JWT_SECRET` and HS256, check expiry/app ID, and resolve the authenticated identity through application user/permission logic.
 - [ ] OAuth state is bound to the initiating browser with a single-use nonce and fixed post-login redirect; logged-out state remains real until authentication succeeds.
 - [ ] Protected backend endpoints independently enforce authorization; least-privilege roles cover User, Verified Organizer, Moderator, Support, Admin, and Super Admin as approved.

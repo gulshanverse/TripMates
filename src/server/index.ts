@@ -11,89 +11,49 @@ import { travelStore } from './store';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
 const port = Number(process.env.PORT ?? 3000);
-const tripIdSchema = z.string().min(1).max(64);
+const idSchema = z.string().min(1).max(64);
+const emailSchema = z.string().email().max(254);
+const sessionCookie = 'tm_session';
 const visitorCookie = 'tm_visitor';
+const cookieValue = (req: express.Request, name: string) => req.headers.cookie?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
+function setCookie(res: express.Response, name: string, value: string, maxAge: number) { res.setHeader('Set-Cookie', `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAge}`); }
+function getVisitorId(req: express.Request, res: express.Response) { const existing = cookieValue(req, visitorCookie); if (existing && /^[a-f0-9-]{36}$/i.test(existing)) return existing; const visitorId = randomUUID(); setCookie(res, visitorCookie, visitorId, 31536000); return visitorId; }
+function currentUser(req: express.Request) { return travelStore.getUserBySession(cookieValue(req, sessionCookie)); }
+function requireUser(req: express.Request, res: express.Response) { const user = currentUser(req); if (!user) { res.status(401).json({ message: 'Authentication required' }); return null; } return user; }
 
-function getVisitorId(req: express.Request, res: express.Response) {
-  const existing = req.headers.cookie?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${visitorCookie}=`))?.split('=')[1];
-  if (existing && /^[a-f0-9-]{36}$/i.test(existing)) return existing;
-  const visitorId = randomUUID();
-  res.setHeader('Set-Cookie', `${visitorCookie}=${visitorId}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`);
-  return visitorId;
-}
+const authBody = z.object({ email: emailSchema, password: z.string().min(8).max(128), displayName: z.string().trim().min(2).max(80).optional() });
+const profileBody = z.object({ displayName: z.string().trim().min(2).max(80).optional(), photoUrl: z.string().url().max(500).optional(), age: z.number().int().min(18).max(120).optional(), homeLocation: z.string().trim().max(120).optional(), preferredDestinations: z.array(z.string().max(64)).max(20).optional(), travelInterests: z.array(z.string().max(60)).max(30).optional(), travelStyle: z.string().max(60).optional(), budgetRange: z.string().max(60).optional(), languages: z.array(z.string().max(40)).max(12).optional(), travelPreferences: z.string().max(500).optional(), visibility: z.enum(['discoverable', 'private']).optional() });
+const tripBody = z.object({ destinationId: idSchema, title: z.string().trim().min(3).max(180), summary: z.string().trim().min(10).max(1000), startDate: z.string().max(40), endDate: z.string().max(40), duration: z.string().max(80), budget: z.number().positive().max(10000000), capacity: z.number().int().min(2).max(100), style: z.enum(['Slow & scenic', 'Adventure', 'Culture-led', 'Wellness']), imageUrl: z.string().url().max(500) });
+const tripPatch = tripBody.omit({ destinationId: true, imageUrl: true }).partial();
 
 async function start() {
   await travelStore.initialize();
-  const app = express();
-  app.disable('x-powered-by');
-  app.use(express.json({ limit: '250kb' }));
-  app.use((req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    next();
-  });
-
+  const app = express(); app.disable('x-powered-by'); app.use(express.json({ limit: '250kb' }));
+  app.use((_req, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin'); res.setHeader('X-Frame-Options', 'DENY'); next(); });
   app.get('/api/health', (_req, res) => res.json({ ok: true, persistence: travelStore.persistenceMode }));
-  app.get('/api/overview', async (req, res) => {
-    const visitorId = getVisitorId(req, res);
-    const [destinationList, tripList, buddyList] = await Promise.all([
-      travelStore.listDestinations(), travelStore.listTrips(undefined, visitorId), travelStore.listBuddies(visitorId),
-    ]);
-    res.json({
-      destinations: destinationList,
-      trips: tripList,
-      buddies: buddyList,
-      stats: { travelers: '12.4k', trips: '480+', destinations: '36' },
-    });
-  });
-  app.get('/api/trips', async (req, res) => {
-    const destination = typeof req.query.destination === 'string' ? req.query.destination : undefined;
-    res.json(await travelStore.listTrips(destination, getVisitorId(req, res)));
-  });
-  app.get('/api/trips/:tripId', async (req, res) => {
-    const parsed = tripIdSchema.safeParse(req.params.tripId);
-    if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' });
-    const trip = await travelStore.getTrip(parsed.data, getVisitorId(req, res));
-    if (!trip) return res.status(404).json({ message: 'Trip not found' });
-    return res.json(trip);
-  });
-  app.post('/api/trips/:tripId/save', async (req, res) => {
-    const parsed = tripIdSchema.safeParse(req.params.tripId);
-    if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' });
-    const saved = await travelStore.saveTrip(parsed.data, getVisitorId(req, res));
-    if (!saved) return res.status(404).json({ message: 'Trip not found' });
-    return res.status(201).json({ saved: true, tripId: parsed.data });
-  });
+
+  app.post('/api/auth/register', (req, res) => { const parsed = authBody.safeParse(req.body); if (!parsed.success || !parsed.data.displayName) return res.status(400).json({ message: 'Display name, valid email and an 8+ character password are required' }); if (!travelStore.rateLimit(`register:${req.ip}`, 5)) return res.status(429).json({ message: 'Too many attempts. Try again later.' }); const user = travelStore.register(parsed.data.email, parsed.data.password, parsed.data.displayName); if (!user) return res.status(409).json({ message: 'An account with this email already exists' }); const token = travelStore.createSession(user.id); setCookie(res, sessionCookie, token, 604800); return res.status(201).json({ user }); });
+  app.post('/api/auth/login', (req, res) => { const parsed = authBody.pick({ email: true, password: true }).safeParse(req.body); if (!parsed.success || !travelStore.rateLimit(`login:${req.ip}`, 10)) return res.status(429).json({ message: 'Invalid credentials or too many attempts' }); const user = parsed.success ? travelStore.authenticate(parsed.data.email, parsed.data.password) : null; if (!user) return res.status(401).json({ message: 'Invalid credentials' }); const token = travelStore.createSession(user.id); setCookie(res, sessionCookie, token, 604800); return res.json({ user }); });
+  app.post('/api/auth/logout', (req, res) => { travelStore.destroySession(cookieValue(req, sessionCookie)); setCookie(res, sessionCookie, '', 0); res.status(204).end(); });
+  app.get('/api/auth/me', (req, res) => { const user = currentUser(req); return user ? res.json({ user }) : res.status(401).json({ message: 'Not authenticated' }); });
+  app.patch('/api/profile', (req, res) => { const user = requireUser(req, res); if (!user) return; const parsed = profileBody.safeParse(req.body); if (!parsed.success) return res.status(400).json({ message: 'Invalid profile fields', issues: parsed.error.flatten() }); return res.json({ user: travelStore.updateProfile(user.id, parsed.data) }); });
+  app.delete('/api/account', (req, res) => { const user = requireUser(req, res); if (!user) return; travelStore.deactivate(user.id); setCookie(res, sessionCookie, '', 0); return res.status(204).end(); });
+
+  app.get('/api/overview', async (req, res) => { const visitorId = getVisitorId(req, res); const [destinationList, tripList, buddyList] = await Promise.all([travelStore.listDestinations(), travelStore.listTrips(undefined, visitorId), travelStore.listBuddies(visitorId)]); res.json({ destinations: destinationList, trips: tripList, buddies: buddyList, stats: { travelers: '12.4k', trips: '480+', destinations: '36' } }); });
+  app.get('/api/trips', async (req, res) => { const destination = typeof req.query.destination === 'string' ? req.query.destination : undefined; res.json(await travelStore.listTrips(destination, getVisitorId(req, res))); });
+  app.get('/api/trips/:tripId', async (req, res) => { const parsed = idSchema.safeParse(req.params.tripId); if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' }); const trip = await travelStore.getTrip(parsed.data, getVisitorId(req, res)); return trip ? res.json(trip) : res.status(404).json({ message: 'Trip not found' }); });
+  app.post('/api/trips', (req, res) => { const user = requireUser(req, res); if (!user) return; const parsed = tripBody.safeParse(req.body); if (!parsed.success) return res.status(400).json({ message: 'Invalid trip details', issues: parsed.error.flatten() }); const trip = travelStore.createTrip(user, parsed.data); return trip ? res.status(201).json({ trip }) : res.status(400).json({ message: 'Unknown destination' }); });
+  app.patch('/api/trips/:tripId', (req, res) => { const user = requireUser(req, res); if (!user) return; const parsed = tripPatch.safeParse(req.body); if (!parsed.success) return res.status(400).json({ message: 'Invalid trip details' }); const trip = travelStore.updateTrip(req.params.tripId, user, parsed.data); return trip ? res.json({ trip }) : res.status(403).json({ message: 'Only the organizer can edit this trip' }); });
+  app.post('/api/trips/:tripId/save', async (req, res) => { const parsed = idSchema.safeParse(req.params.tripId); if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' }); const saved = await travelStore.saveTrip(parsed.data, getVisitorId(req, res)); return saved ? res.status(201).json({ saved: true, tripId: parsed.data }) : res.status(404).json({ message: 'Trip not found' }); });
+  app.post('/api/trips/:tripId/join-requests', (req, res) => { const user = requireUser(req, res); if (!user) return; const parsed = idSchema.safeParse(req.params.tripId); if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' }); const result = travelStore.requestJoin(parsed.data, user.id); if ('error' in result) return res.status(result.error === 'duplicate' ? 409 : result.error === 'full' ? 409 : 404).json({ message: result.error === 'duplicate' ? 'Join request already pending' : result.error === 'full' ? 'Trip is full' : 'Trip not found' }); return res.status(201).json(result); });
+  app.get('/api/join-requests', (req, res) => { const user = requireUser(req, res); if (!user) return; return res.json({ requests: travelStore.listJoinRequests(user.id) }); });
+  app.patch('/api/join-requests/:requestId', (req, res) => { const user = requireUser(req, res); if (!user) return; const status = z.enum(['approved', 'rejected', 'cancelled']).safeParse(req.body?.status); if (!status.success) return res.status(400).json({ message: 'Invalid request status' }); const result = travelStore.updateJoinRequest(req.params.requestId, user.displayName, status.data); if ('error' in result) return res.status(result.error === 'forbidden' ? 403 : result.error === 'full' ? 409 : 404).json({ message: result.error }); return res.json(result); });
   app.get('/api/buddies', async (req, res) => res.json(await travelStore.listBuddies(getVisitorId(req, res))));
-  app.post('/api/buddies/:buddyId/interest', async (req, res) => {
-    const parsed = tripIdSchema.safeParse(req.params.buddyId);
-    if (!parsed.success) return res.status(400).json({ message: 'Invalid buddy id' });
-    const interested = await travelStore.expressInterest(parsed.data, getVisitorId(req, res));
-    if (!interested) return res.status(404).json({ message: 'Traveler not found' });
-    return res.status(201).json({ interested: true, buddyId: parsed.data });
-  });
+  app.post('/api/buddies/:buddyId/interest', async (req, res) => { const user = currentUser(req); const actor = user?.id ?? getVisitorId(req, res); const parsed = idSchema.safeParse(req.params.buddyId); if (!parsed.success) return res.status(400).json({ message: 'Invalid buddy id' }); const interested = await travelStore.expressInterest(parsed.data, actor); return interested ? res.status(201).json({ interested: true, buddyId: parsed.data, status: 'pending' }) : res.status(404).json({ message: 'Traveler not found' }); });
+  app.delete('/api/buddies/:buddyId/interest', async (req, res) => { const user = requireUser(req, res); if (!user) return; return await travelStore.cancelInterest(req.params.buddyId, user.id) ? res.status(204).end() : res.status(404).json({ message: 'Pending interest not found' }); });
 
-  const publicDir = path.join(root, 'public');
-  app.use(express.static(publicDir));
-  const isProduction = process.env.NODE_ENV === 'production';
-  if (!isProduction) {
-    const vite = await createViteServer({ root: path.join(root, 'src/client'), server: { middlewareMode: true }, appType: 'spa' });
-    app.use(vite.middlewares);
-    app.use(async (req, res, next) => {
-      if (req.method !== 'GET' || req.path.startsWith('/api/')) return next();
-      try {
-        const template = fs.readFileSync(path.join(root, 'src/client/index.html'), 'utf-8');
-        const html = await vite.transformIndexHtml(req.originalUrl, template);
-        res.status(200).set({ 'Content-Type': 'text/html' }).end(html);
-      } catch (error) { vite.ssrFixStacktrace(error as Error); next(error); }
-    });
-  } else {
-    app.use(express.static(path.join(root, 'dist')));
-    app.get('*', (_req, res) => res.sendFile(path.join(root, 'dist/index.html')));
-  }
-
-  const server = createServer(app);
-  server.listen(port, '0.0.0.0', () => console.log(`[TripMates] listening on ${port}`));
+  const publicDir = path.join(root, 'public'); app.use(express.static(publicDir)); const isProduction = process.env.NODE_ENV === 'production';
+  if (!isProduction) { const vite = await createViteServer({ root: path.join(root, 'src/client'), server: { middlewareMode: true }, appType: 'spa' }); app.use(vite.middlewares); app.use(async (req, res, next) => { if (req.method !== 'GET' || req.path.startsWith('/api/')) return next(); try { const template = fs.readFileSync(path.join(root, 'src/client/index.html'), 'utf-8'); const html = await vite.transformIndexHtml(req.originalUrl, template); res.status(200).set({ 'Content-Type': 'text/html' }).end(html); } catch (error) { vite.ssrFixStacktrace(error as Error); next(error); } }); } else { app.use(express.static(path.join(root, 'dist'))); app.use((req, res, next) => req.method === 'GET' ? res.sendFile(path.join(root, 'dist/index.html')) : next()); }
+  createServer(app).listen(port, '0.0.0.0', () => console.log(`[TripMates] listening on ${port}`));
 }
-
 start().catch((error) => { console.error(error); process.exit(1); });
