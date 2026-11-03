@@ -8,6 +8,8 @@ The current build includes a polished public homepage, Rishikesh-first group-tri
 
 The product intentionally keeps travel buddies, group-trip participation, and Travel Dates/romantic consent separate. This milestone adds email/password registration and login, secure HttpOnly sessions, profile onboarding/editing, account deletion, organizer trip creation/editing, join-request approval boundaries, capacity checks, and cancellable buddy interests. OAuth is intentionally not faked; a provider can be added when real credentials and callback configuration are available.
 
+The persistence hardening pass makes MySQL the production source of truth for accounts, profiles, sessions, user-created trips, join requests, participants, saved trips, and travel connections. Production startup fails explicitly when `DATABASE_URL` is missing or unreachable. The in-memory path is available only when `ALLOW_MEMORY_FALLBACK=true` outside production, for isolated tests.
+
 ## Development
 
 ```bash
@@ -22,9 +24,12 @@ Useful checks:
 ```bash
 pnpm check
 pnpm build
+pnpm test
 pnpm db:push
 pnpm db:seed
 ```
+
+`pnpm db:push` applies all ordered SQL migrations exactly once through the `schema_migrations` table. Configure a real email provider before enabling verification or reset delivery; `EMAIL_PROVIDER=disabled` is the safe default and no tokens are exposed by the application.
 
 See `plan.md` for the architecture and design system, and `TODO.md` for requirement traceability.
 

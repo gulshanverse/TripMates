@@ -1,123 +1,47 @@
-import mysql, { type Pool } from 'mysql2/promise';
+import mysql, { type Pool, type RowDataPacket } from 'mysql2/promise';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { trips, buddies, destinations } from '../shared/data';
 import type { Trip } from '../shared/types';
 
+export type UserProfile = { displayName: string; photoUrl?: string; age?: number; homeLocation?: string; preferredDestinations: string[]; travelInterests: string[]; travelStyle?: string; budgetRange?: string; languages: string[]; travelPreferences?: string; visibility: 'discoverable' | 'private' };
 export type PublicUser = { id: string; email: string; displayName: string; profile: UserProfile };
-export type UserProfile = {
-  displayName: string; photoUrl?: string; age?: number; homeLocation?: string;
-  preferredDestinations: string[]; travelInterests: string[]; travelStyle?: string;
-  budgetRange?: string; languages: string[]; travelPreferences?: string;
-  visibility: 'discoverable' | 'private';
-};
 export type JoinRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 export type JoinRequest = { id: string; tripId: string; userId: string; status: JoinRequestStatus; createdAt: string };
-export type Connection = { id: string; userId: string; buddyId: string; status: 'pending' | 'connected' | 'declined' | 'cancelled' };
-
-type User = PublicUser & { passwordHash: string; passwordSalt: string; emailVerified: boolean; deactivatedAt?: string };
-type Session = { userId: string; expiresAt: number };
-
-const migrationStatements = [
-  `CREATE TABLE IF NOT EXISTS destinations (id VARCHAR(64) PRIMARY KEY, name VARCHAR(120) NOT NULL, region VARCHAR(120) NOT NULL, country VARCHAR(120) NOT NULL, description TEXT NOT NULL, image_url VARCHAR(500) NOT NULL, trip_count INT NOT NULL DEFAULT 0, mood VARCHAR(120) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY destinations_name_unique (name))`,
-  `CREATE TABLE IF NOT EXISTS trips (id VARCHAR(64) PRIMARY KEY, destination_id VARCHAR(64) NOT NULL, title VARCHAR(180) NOT NULL, summary TEXT NOT NULL, start_date VARCHAR(40) NOT NULL, end_date VARCHAR(40) NOT NULL, duration VARCHAR(80) NOT NULL, budget DECIMAL(10, 2) NOT NULL, currency VARCHAR(3) NOT NULL DEFAULT 'INR', members INT NOT NULL DEFAULT 1, capacity INT NOT NULL, organizer VARCHAR(120) NOT NULL, organizer_initials VARCHAR(4) NOT NULL, organizer_verified BOOLEAN NOT NULL DEFAULT FALSE, style VARCHAR(60) NOT NULL, image_url VARCHAR(500) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, INDEX trips_destination_idx (destination_id), INDEX trips_dates_idx (start_date, end_date), CONSTRAINT trips_destination_fk FOREIGN KEY (destination_id) REFERENCES destinations(id))`,
-  `CREATE TABLE IF NOT EXISTS saved_trips (id INT AUTO_INCREMENT PRIMARY KEY, visitor_id VARCHAR(128) NOT NULL, trip_id VARCHAR(64) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY saved_trips_visitor_trip_unique (visitor_id, trip_id))`,
-  `CREATE TABLE IF NOT EXISTS buddy_interests (id INT AUTO_INCREMENT PRIMARY KEY, visitor_id VARCHAR(128) NOT NULL, buddy_id VARCHAR(64) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY buddy_interests_visitor_buddy_unique (visitor_id, buddy_id))`,
-];
-
-function hashPassword(password: string, salt: string) { return scryptSync(password, salt, 64).toString('hex'); }
-function publicUser(user: User): PublicUser { const { passwordHash: _hash, passwordSalt: _salt, ...safe } = user; return safe; }
+type User = PublicUser & { passwordHash: string; passwordSalt: string; deactivatedAt?: string };
+const hash = (password: string, salt: string) => scryptSync(password, salt, 64).toString('hex');
+const safeUser = (u: User): PublicUser => ({ id: u.id, email: u.email, displayName: u.displayName, profile: u.profile });
+const parse = <T>(v: unknown, fallback: T): T => { try { return typeof v === 'string' ? JSON.parse(v) : (v as T) ?? fallback; } catch { return fallback; } };
+const j = (v: unknown) => JSON.stringify(v);
 
 export class TravelStore {
-  private pool: Pool | null = null;
-  private localSaved = new Set<string>();
-  private localInterests = new Set<string>();
-  private users = new Map<string, User>();
-  private emailToUser = new Map<string, string>();
-  private sessions = new Map<string, Session>();
-  private profiles = new Map<string, UserProfile>();
-  private joinRequests = new Map<string, JoinRequest>();
-  private connections = new Map<string, Connection>();
-  private rateBuckets = new Map<string, { count: number; resetAt: number }>();
-  private ready = false;
-
-  async initialize() {
-    if (!process.env.DATABASE_URL) return;
-    try {
-      this.pool = mysql.createPool({ uri: process.env.DATABASE_URL, connectionLimit: 5, waitForConnections: true });
-      for (const statement of migrationStatements) await this.pool.query(statement);
-      this.ready = true;
-    } catch (error) {
-      console.warn('[TripMates] Database unavailable; keeping the API available with session-local persistence.', error instanceof Error ? error.message : error);
-      this.pool?.end().catch(() => undefined); this.pool = null;
-    }
-  }
-
-  rateLimit(key: string, limit = 8, windowMs = 15 * 60 * 1000) {
-    const now = Date.now(); const bucket = this.rateBuckets.get(key);
-    if (!bucket || bucket.resetAt <= now) { this.rateBuckets.set(key, { count: 1, resetAt: now + windowMs }); return true; }
-    if (bucket.count >= limit) return false; bucket.count += 1; return true;
-  }
-
-  register(email: string, password: string, displayName: string) {
-    const normalized = email.trim().toLowerCase();
-    if (this.emailToUser.has(normalized)) return null;
-    const id = randomUUID(); const salt = randomBytes(16).toString('hex');
-    const profile: UserProfile = { displayName: displayName.trim(), preferredDestinations: [], travelInterests: [], languages: [], visibility: 'discoverable' };
-    const user: User = { id, email: normalized, displayName: profile.displayName, profile, passwordSalt: salt, passwordHash: hashPassword(password, salt), emailVerified: false };
-    this.users.set(id, user); this.emailToUser.set(normalized, id); this.profiles.set(id, profile);
-    return publicUser(user);
-  }
-
-  authenticate(email: string, password: string) {
-    const user = this.users.get(this.emailToUser.get(email.trim().toLowerCase()) ?? '');
-    if (!user || user.deactivatedAt) return null;
-    const actual = Buffer.from(user.passwordHash, 'hex'); const expected = Buffer.from(hashPassword(password, user.passwordSalt), 'hex');
-    return actual.length === expected.length && timingSafeEqual(actual, expected) ? publicUser(user) : null;
-  }
-
-  createSession(userId: string) { const token = randomBytes(32).toString('hex'); this.sessions.set(token, { userId, expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 7 }); return token; }
-  getUserBySession(token?: string) { if (!token) return null; const session = this.sessions.get(token); if (!session || session.expiresAt < Date.now()) { if (session) this.sessions.delete(token); return null; } const user = this.users.get(session.userId); return user && !user.deactivatedAt ? publicUser(user) : null; }
-  destroySession(token?: string) { if (token) this.sessions.delete(token); }
-  updateProfile(userId: string, patch: Partial<UserProfile>) { const user = this.users.get(userId); if (!user) return null; const profile = { ...user.profile, ...patch, displayName: patch.displayName?.trim() || user.profile.displayName }; user.profile = profile; user.displayName = profile.displayName; this.profiles.set(userId, profile); return publicUser(user); }
-  deactivate(userId: string) { const user = this.users.get(userId); if (!user) return false; user.deactivatedAt = new Date().toISOString(); for (const [token, session] of this.sessions) if (session.userId === userId) this.sessions.delete(token); return true; }
-
-  async listTrips(destinationId?: string, visitorId = 'anonymous') { const source = destinationId ? trips.filter((trip) => trip.destinationId === destinationId) : trips; const saved = await this.savedIds(visitorId); return source.map((trip) => ({ ...trip, saved: saved.has(trip.id) })); }
-  async getTrip(id: string, visitorId = 'anonymous') { const trip = trips.find((item) => item.id === id); if (!trip) return null; const saved = await this.savedIds(visitorId); return { ...trip, saved: saved.has(trip.id) }; }
-  async listDestinations() { return destinations; }
-  async listBuddies(visitorId = 'anonymous') { const interests = await this.interestIds(visitorId); return buddies.map((buddy) => ({ ...buddy, interested: interests.has(buddy.id) })); }
-  async saveTrip(tripId: string, visitorId: string) { if (!trips.some((trip) => trip.id === tripId)) return false; if (this.pool) await this.pool.query('INSERT IGNORE INTO saved_trips (visitor_id, trip_id) VALUES (?, ?)', [visitorId, tripId]); this.localSaved.add(`${visitorId}:${tripId}`); return true; }
-  async expressInterest(buddyId: string, visitorId: string) { if (!buddies.some((buddy) => buddy.id === buddyId)) return false; if (this.pool) await this.pool.query('INSERT IGNORE INTO buddy_interests (visitor_id, buddy_id) VALUES (?, ?)', [visitorId, buddyId]); this.localInterests.add(`${visitorId}:${buddyId}`); const key = `${visitorId}:${buddyId}`; if (!this.connections.has(key)) this.connections.set(key, { id: randomUUID(), userId: visitorId, buddyId, status: 'pending' }); return true; }
-  async cancelInterest(buddyId: string, visitorId: string) { const item = this.connections.get(`${visitorId}:${buddyId}`); if (!item || item.status !== 'pending') return false; item.status = 'cancelled'; return true; }
-  createTrip(user: PublicUser, input: Pick<Trip, 'destinationId' | 'title' | 'summary' | 'startDate' | 'endDate' | 'duration' | 'budget' | 'capacity' | 'style' | 'imageUrl'>) {
-    const destination = destinations.find((item) => item.id === input.destinationId); if (!destination) return null;
-    const trip: Trip = { ...input, id: `user-${randomUUID()}`, destinationName: destination.name, region: destination.region, currency: 'INR', members: 1, organizer: user.displayName, organizerInitials: user.displayName.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(), organizerVerified: false, tags: [], itinerary: [] };
-    trips.push(trip); return trip;
-  }
-  updateTrip(tripId: string, user: PublicUser, patch: Partial<Pick<Trip, 'title' | 'summary' | 'startDate' | 'endDate' | 'duration' | 'budget' | 'capacity' | 'style'>>) {
-    const trip = trips.find((item) => item.id === tripId); if (!trip || trip.organizer !== user.displayName) return null; Object.assign(trip, patch); return trip;
-  }
-  getConnections(userId: string) { return [...this.connections.values()].filter((item) => item.userId === userId).map((item) => ({ ...item })); }
-  async savedIds(visitorId: string) { const ids = new Set<string>(); for (const key of this.localSaved) if (key.startsWith(`${visitorId}:`)) ids.add(key.slice(visitorId.length + 1)); if (this.pool) { const [rows] = await this.pool.query('SELECT trip_id FROM saved_trips WHERE visitor_id = ?', [visitorId]); for (const row of rows as { trip_id: string }[]) ids.add(row.trip_id); } return ids; }
-  async interestIds(visitorId: string) { const ids = new Set<string>(); for (const key of this.localInterests) if (key.startsWith(`${visitorId}:`)) ids.add(key.slice(visitorId.length + 1)); if (this.pool) { const [rows] = await this.pool.query('SELECT buddy_id FROM buddy_interests WHERE visitor_id = ?', [visitorId]); for (const row of rows as { buddy_id: string }[]) ids.add(row.buddy_id); } return ids; }
-
-  requestJoin(tripId: string, userId: string) {
-    const trip = trips.find((item) => item.id === tripId); if (!trip) return { error: 'not_found' as const };
-    const existing = [...this.joinRequests.values()].find((request) => request.tripId === tripId && request.userId === userId && request.status === 'pending');
-    if (existing) return { error: 'duplicate' as const, request: existing };
-    if (trip.members >= trip.capacity) return { error: 'full' as const };
-    const request = { id: randomUUID(), tripId, userId, status: 'pending' as const, createdAt: new Date().toISOString() }; this.joinRequests.set(request.id, request); return { request };
-  }
-  listJoinRequests(userId: string, organizer = false) { return [...this.joinRequests.values()].filter((item) => organizer ? trips.some((trip) => trip.id === item.tripId && trip.organizer.toLowerCase().includes(userId.toLowerCase())) : item.userId === userId); }
-  updateJoinRequest(requestId: string, userId: string, status: 'approved' | 'rejected' | 'cancelled') {
-    const request = this.joinRequests.get(requestId); if (!request || request.status !== 'pending') return { error: 'not_found' as const };
-    const trip = trips.find((item) => item.id === request.tripId); if (!trip) return { error: 'not_found' as const };
-    if (status === 'cancelled' && request.userId !== userId) return { error: 'forbidden' as const };
-    if (status !== 'cancelled' && !trip.organizer.toLowerCase().includes(userId.toLowerCase())) return { error: 'forbidden' as const };
-    if (status === 'approved') { if (trip.members >= trip.capacity) return { error: 'full' as const }; trip.members += 1; }
-    request.status = status; return { request };
-  }
-  get persistenceMode() { return this.ready ? 'managed-database' : 'session-local'; }
+  private pool: Pool | null = null; private memory = false;
+  private users = new Map<string, User>(); private sessions = new Map<string, { userId: string; expiresAt: number }>(); private saved = new Set<string>(); private interests = new Set<string>(); private joins = new Map<string, JoinRequest>(); private buckets = new Map<string, { count: number; resetAt: number }>();
+  async initialize() { this.memory = process.env.NODE_ENV !== 'production' && process.env.ALLOW_MEMORY_FALLBACK === 'true'; if (!process.env.DATABASE_URL) { if (this.memory) return; throw new Error('DATABASE_URL is required. Set ALLOW_MEMORY_FALLBACK=true only for isolated development tests.'); } this.pool = mysql.createPool({ uri: process.env.DATABASE_URL, connectionLimit: 10, waitForConnections: true }); try { await this.pool.query('SELECT 1'); } catch (error) { await this.pool.end(); this.pool = null; throw new Error(`Database connection failed: ${error instanceof Error ? error.message : 'unknown error'}`); } }
+  private db() { if (!this.pool) throw new Error('Database is not initialized'); return this.pool; }
+  rateLimit(key: string, limit = 8, windowMs = 900000) { const now = Date.now(), b = this.buckets.get(key); if (!b || b.resetAt < now) { this.buckets.set(key, { count: 1, resetAt: now + windowMs }); return true; } if (b.count >= limit) return false; b.count++; return true; }
+  async register(email: string, password: string, displayName: string) { const id = randomUUID(), normalized = email.trim().toLowerCase(), salt = randomBytes(16).toString('hex'), name = displayName.trim(); const profile: UserProfile = { displayName: name, preferredDestinations: [], travelInterests: [], languages: [], visibility: 'discoverable' }; if (this.pool) { try { await this.db().query('INSERT INTO users (id,email,display_name,password_hash,password_salt) VALUES (?,?,?,?,?)', [id, normalized, name, hash(password, salt), salt]); await this.db().query('INSERT INTO user_profiles (user_id,preferred_destinations,travel_interests,languages,visibility) VALUES (?,?,?,?,?)', [id,j([]),j([]),j([]),'discoverable']); } catch (e) { if ((e as { code?: string }).code === 'ER_DUP_ENTRY') return null; throw e; } return { id, email: normalized, displayName: name, profile }; } if (!this.memory || [...this.users.values()].some((u) => u.email === normalized)) return null; const u: User = { id, email: normalized, displayName: name, profile, passwordHash: hash(password, salt), passwordSalt: salt }; this.users.set(id, u); return safeUser(u); }
+  async authenticate(email: string, password: string) { let u: User | undefined; if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT u.*,p.* FROM users u JOIN user_profiles p ON p.user_id=u.id WHERE u.email=? AND u.deactivated_at IS NULL LIMIT 1', [email.trim().toLowerCase()]); const r = rows[0]; if (r) u = { id: String(r.id), email: String(r.email), displayName: String(r.display_name), passwordHash: String(r.password_hash), passwordSalt: String(r.password_salt), profile: { displayName: String(r.display_name), photoUrl: r.photo_url, age: r.age, homeLocation: r.home_location, preferredDestinations: parse(r.preferred_destinations, []), travelInterests: parse(r.travel_interests, []), travelStyle: r.travel_style, budgetRange: r.budget_range, languages: parse(r.languages, []), travelPreferences: r.travel_preferences, visibility: r.visibility ?? 'discoverable' } }; } else u = [...this.users.values()].find((x) => x.email === email.trim().toLowerCase() && !x.deactivatedAt); if (!u) return null; const a = Buffer.from(u.passwordHash, 'hex'), b = Buffer.from(hash(password, u.passwordSalt), 'hex'); return a.length === b.length && timingSafeEqual(a, b) ? safeUser(u) : null; }
+  async createSession(userId: string) { const token = randomBytes(32).toString('hex'), expiry = new Date(Date.now() + 604800000); if (this.pool) await this.db().query('INSERT INTO user_sessions (id,user_id,expires_at) VALUES (?,?,?)', [token,userId,expiry]); else { if (!this.memory) throw new Error('Database is required'); this.sessions.set(token, { userId, expiresAt: expiry.getTime() }); } return token; }
+  async getUserBySession(token?: string) { if (!token) return null; let userId: string | undefined; if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT user_id FROM user_sessions WHERE id=? AND expires_at>NOW()', [token]); userId = rows[0]?.user_id as string | undefined; } else { const s = this.sessions.get(token); if (s && s.expiresAt > Date.now()) userId = s.userId; } if (!userId) return null; if (!this.pool) { const u = this.users.get(userId); return u && !u.deactivatedAt ? safeUser(u) : null; } const [rows] = await this.db().query<RowDataPacket[]>('SELECT u.id,u.email,u.display_name,p.* FROM users u JOIN user_profiles p ON p.user_id=u.id WHERE u.id=? AND u.deactivated_at IS NULL', [userId]); if (!rows[0]) return null; const r = rows[0]; return { id: String(r.id), email: String(r.email), displayName: String(r.display_name), profile: { displayName: String(r.display_name), photoUrl: r.photo_url, age: r.age, homeLocation: r.home_location, preferredDestinations: parse(r.preferred_destinations, []), travelInterests: parse(r.travel_interests, []), travelStyle: r.travel_style, budgetRange: r.budget_range, languages: parse(r.languages, []), travelPreferences: r.travel_preferences, visibility: r.visibility ?? 'discoverable' as const } }; }
+  async destroySession(token?: string) { if (!token) return; if (this.pool) await this.db().query('DELETE FROM user_sessions WHERE id=?', [token]); else this.sessions.delete(token); }
+  async updateProfile(userId: string, patch: Partial<UserProfile>) { if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT u.email,u.display_name,p.* FROM users u JOIN user_profiles p ON p.user_id=u.id WHERE u.id=?', [userId]); if (!rows[0]) return null; const r=rows[0], profile: UserProfile={ displayName: patch.displayName?.trim() || String(r.display_name), photoUrl: patch.photoUrl ?? r.photo_url, age: patch.age ?? r.age, homeLocation: patch.homeLocation ?? r.home_location, preferredDestinations: patch.preferredDestinations ?? parse(r.preferred_destinations,[]), travelInterests: patch.travelInterests ?? parse(r.travel_interests,[]), travelStyle: patch.travelStyle ?? r.travel_style, budgetRange: patch.budgetRange ?? r.budget_range, languages: patch.languages ?? parse(r.languages,[]), travelPreferences: patch.travelPreferences ?? r.travel_preferences, visibility: patch.visibility ?? r.visibility }; await this.db().query('UPDATE users SET display_name=? WHERE id=?',[profile.displayName,userId]); await this.db().query('UPDATE user_profiles SET photo_url=?,age=?,home_location=?,preferred_destinations=?,travel_interests=?,travel_style=?,budget_range=?,languages=?,travel_preferences=?,visibility=? WHERE user_id=?',[profile.photoUrl??null,profile.age??null,profile.homeLocation??null,j(profile.preferredDestinations),j(profile.travelInterests),profile.travelStyle??null,profile.budgetRange??null,j(profile.languages),profile.travelPreferences??null,profile.visibility,userId]); return { id:userId,email:String(r.email),displayName:profile.displayName,profile }; } const u=this.users.get(userId); if(!u)return null; u.profile={...u.profile,...patch,displayName:patch.displayName?.trim()||u.displayName};u.displayName=u.profile.displayName;return safeUser(u); }
+  async deactivate(userId:string){if(this.pool){await this.db().query('UPDATE users SET deactivated_at=NOW() WHERE id=?',[userId]);await this.db().query('DELETE FROM user_sessions WHERE user_id=?',[userId]);return true;}const u=this.users.get(userId);if(!u)return false;u.deactivatedAt=new Date().toISOString();return true;}
+  async listDestinations(){return destinations;}
+  async listTrips(destinationId?:string, visitorId='anonymous'){const source=destinationId?trips.filter(t=>t.destinationId===destinationId):trips;let persisted:Trip[]=[];if(this.pool){const[rows]=await this.db().query<RowDataPacket[]>('SELECT * FROM trips WHERE (? IS NULL OR destination_id=?) ORDER BY created_at DESC',[destinationId??null,destinationId??null]);persisted=rows.map(r=>{const d=destinations.find(x=>x.id===String(r.destination_id));return{id:String(r.id),destinationId:String(r.destination_id),destinationName:d?.name??String(r.destination_id),region:d?.region??'',title:String(r.title),summary:String(r.summary),startDate:String(r.start_date),endDate:String(r.end_date),duration:String(r.duration),budget:Number(r.budget),currency:'INR',members:Number(r.members),capacity:Number(r.capacity),organizer:String(r.organizer),organizerInitials:String(r.organizer_initials),organizerVerified:Boolean(r.organizer_verified),style:r.style as Trip['style'],tags:[],imageUrl:String(r.image_url),itinerary:[]};});}const ids=await this.savedIds(visitorId);return[...source,...persisted.filter(x=>!source.some(y=>y.id===x.id))].map(t=>({...t,saved:ids.has(t.id)}));}
+  async getTrip(id:string,visitorId='anonymous'){const t=trips.find(x=>x.id===id);return t?{...t,saved:(await this.savedIds(visitorId)).has(id)}:null;}
+  async listBuddies(visitorId='anonymous'){const ids=await this.interestIds(visitorId);return buddies.map(b=>({...b,interested:ids.has(b.id)}));}
+  async savedIds(v:string){if(this.pool){const [rows]=await this.db().query<RowDataPacket[]>('SELECT trip_id FROM saved_trips WHERE visitor_id=?',[v]);return new Set(rows.map(r=>String(r.trip_id)));}return new Set([...this.saved].filter(k=>k.startsWith(`${v}:`)).map(k=>k.slice(v.length+1)));}
+  async saveTrip(t:string,v:string){if(!trips.some(x=>x.id===t))return false;if(this.pool)await this.db().query('INSERT IGNORE INTO saved_trips (visitor_id,trip_id) VALUES (?,?)',[v,t]);else{if(!this.memory)throw new Error('Database is required');this.saved.add(`${v}:${t}`);}return true;}
+  async interestIds(v:string){if(this.pool){const[rows]=await this.db().query<RowDataPacket[]>('SELECT receiver_id FROM travel_connections WHERE sender_id=? AND status IN (\'pending\',\'connected\')',[v]);return new Set(rows.map(r=>String(r.receiver_id)));}return new Set([...this.interests].filter(k=>k.startsWith(`${v}:`)).map(k=>k.slice(v.length+1)));}
+  async expressInterest(b:string,v:string){if(!buddies.some(x=>x.id===b))return false;if(this.pool)await this.db().query('INSERT IGNORE INTO travel_connections (id,sender_id,receiver_id,status) VALUES (?,?,?,\'pending\')',[randomUUID(),v,b]);else{if(!this.memory)throw new Error('Database is required');this.interests.add(`${v}:${b}`);}return true;}
+  async cancelInterest(b:string,v:string){if(this.pool){const[r]=await this.db().query('UPDATE travel_connections SET status=\'cancelled\' WHERE sender_id=? AND receiver_id=? AND status=\'pending\'',[v,b]);return(r as {affectedRows:number}).affectedRows===1;}const k=`${v}:${b}`;if(!this.interests.has(k))return false;this.interests.delete(k);return true;}
+  async createTrip(user:PublicUser,input:Pick<Trip,'destinationId'|'title'|'summary'|'startDate'|'endDate'|'duration'|'budget'|'capacity'|'style'|'imageUrl'>){const d=destinations.find(x=>x.id===input.destinationId);if(!d)return null;const t:Trip&{organizerUserId:string}={...input,id:`user-${randomUUID()}`,destinationName:d.name,region:d.region,currency:'INR',members:1,organizer:user.displayName,organizerInitials:user.displayName.slice(0,2).toUpperCase(),organizerVerified:false,tags:[],itinerary:[],organizerUserId:user.id};if(this.pool)await this.db().query('INSERT INTO trips (id,destination_id,title,summary,start_date,end_date,duration,budget,currency,members,capacity,organizer,organizer_user_id,organizer_initials,organizer_verified,style,image_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[t.id,t.destinationId,t.title,t.summary,t.startDate,t.endDate,t.duration,t.budget,'INR',1,t.capacity,t.organizer,user.id,t.organizerInitials,false,t.style,t.imageUrl]);else{if(!this.memory)throw new Error('Database is required');trips.push(t);}return t;}
+  async updateTrip(id:string,user:PublicUser,patch:Partial<Pick<Trip,'title'|'summary'|'startDate'|'endDate'|'duration'|'budget'|'capacity'|'style'>>){if(this.pool){const columns:Record<string,string>={title:'title',summary:'summary',startDate:'start_date',endDate:'end_date',duration:'duration',budget:'budget',capacity:'capacity',style:'style'};const entries=Object.entries(patch).filter(([key])=>columns[key]);if(!entries.length)return null;const set=entries.map(([key])=>`${columns[key]}=?`).join(',');const[result]=await this.db().query(`UPDATE trips SET ${set} WHERE id=? AND organizer_user_id=?`,[...entries.map(([,value])=>value),id,user.id]);return(result as{affectedRows:number}).affectedRows===1?{id,...patch}:null;}const t=trips.find(x=>x.id===id) as(Trip&{organizerUserId?:string})|undefined;if(!this.memory||!t||t.organizerUserId!==user.id)return null;Object.assign(t,patch);return t;}
+  async requestJoin(tripId:string,userId:string){if(this.pool){const c=await this.db().getConnection();try{await c.beginTransaction();const[rows]=await c.query<RowDataPacket[]>('SELECT members,capacity FROM trips WHERE id=? FOR UPDATE',[tripId]);const t=rows[0];if(!t){await c.rollback();return{error:'not_found' as const};}if(Number(t.members)>=Number(t.capacity)){await c.rollback();return{error:'full' as const};}const id=randomUUID();try{await c.query('INSERT INTO trip_join_requests (id,trip_id,user_id,status) VALUES (?,?,?,\'pending\')',[id,tripId,userId]);await c.commit();return{request:{id,tripId,userId,status:'pending' as const,createdAt:new Date().toISOString()}};}catch(e){await c.rollback();if((e as{code?:string}).code==='ER_DUP_ENTRY')return{error:'duplicate' as const};throw e;}}finally{c.release();}}const t=trips.find(x=>x.id===tripId);if(!this.memory||!t)return{error:'not_found' as const};if(t.members>=t.capacity)return{error:'full' as const};if([...this.joins.values()].some(r=>r.tripId===tripId&&r.userId===userId&&r.status==='pending'))return{error:'duplicate' as const};const r={id:randomUUID(),tripId,userId,status:'pending' as const,createdAt:new Date().toISOString()};this.joins.set(r.id,r);return{request:r};}
+  async listJoinRequests(userId:string){if(this.pool){const[rows]=await this.db().query<RowDataPacket[]>('SELECT id,trip_id,user_id,status,created_at FROM trip_join_requests WHERE user_id=?',[userId]);return rows.map(r=>({id:String(r.id),tripId:String(r.trip_id),userId:String(r.user_id),status:r.status as JoinRequestStatus,createdAt:new Date(r.created_at).toISOString()}));}return[...this.joins.values()].filter(r=>r.userId===userId);}
+  async updateJoinRequest(id:string,userId:string,status:'approved'|'rejected'|'cancelled'){if(this.pool){const c=await this.db().getConnection();try{await c.beginTransaction();const[rows]=await c.query<RowDataPacket[]>('SELECT r.*,t.organizer_user_id,t.capacity FROM trip_join_requests r JOIN trips t ON t.id=r.trip_id WHERE r.id=? FOR UPDATE',[id]);const r=rows[0];if(!r){await c.rollback();return{error:'not_found' as const};}if(status==='cancelled'?String(r.user_id)!==userId:String(r.organizer_user_id)!==userId){await c.rollback();return{error:'forbidden' as const};}if(status==='approved'){const[u]=await c.query('UPDATE trips SET members=members+1 WHERE id=? AND members<capacity',[r.trip_id]);if((u as{affectedRows:number}).affectedRows!==1){await c.rollback();return{error:'full' as const};}await c.query('INSERT INTO trip_participants (trip_id,user_id) VALUES (?,?)',[r.trip_id,r.user_id]);}await c.query('UPDATE trip_join_requests SET status=? WHERE id=? AND status=\'pending\'',[status,id]);await c.commit();return{request:{id:String(r.id),tripId:String(r.trip_id),userId:String(r.user_id),status,createdAt:new Date(r.created_at).toISOString()}};}finally{c.release();}}const r=this.joins.get(id),t=r&&trips.find(x=>x.id===r.tripId) as(Trip&{organizerUserId?:string})|undefined;if(!this.memory||!r||!t||r.status!=='pending')return{error:'not_found' as const};if(status==='cancelled'?r.userId!==userId:t.organizerUserId!==userId)return{error:'forbidden' as const};if(status==='approved'){if(t.members>=t.capacity)return{error:'full' as const};t.members++;}r.status=status;return{request:r};}
+  get persistenceMode(){return this.pool?'managed-database':this.memory?'explicit-development-memory':'uninitialized';}
 }
-export const travelStore = new TravelStore();
-export type TripWithSaved = Trip & { saved?: boolean };
-export { publicUser };
+export const travelStore=new TravelStore();
+export type TripWithSaved=Trip&{saved?:boolean};
+export { safeUser as publicUser };
