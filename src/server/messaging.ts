@@ -2,7 +2,7 @@ import mysql, { type Pool, type RowDataPacket } from 'mysql2/promise';
 import { randomUUID } from 'node:crypto';
 import type { Response } from 'express';
 
-export type Conversation = { id: string; kind: 'connection' | 'trip'; createdBy: string; createdAt: string };
+export type Conversation = { id: string; kind: 'connection' | 'trip'; tripId?: string; createdBy: string; createdAt: string };
 export type Message = { id: string; conversationId: string; senderId: string; body: string; createdAt: string };
 export type Notification = { id: string; type: string; actorId?: string; entityId?: string; body: string; createdAt: string; readAt?: string };
 
@@ -16,9 +16,11 @@ export class MessagingStore {
   private blocks = new Set<string>();
   private streams = new Map<string, Set<Response>>();
   private connectionAuthorizer: ((a: string, b: string) => Promise<boolean>) | null = null;
+  private tripAuthorizer: ((tripId: string, userId: string) => Promise<boolean>) | null = null;
   private restrictionChecker: ((userId: string) => Promise<boolean>) | null = null;
 
   setConnectionAuthorizer(authorizer: (a: string, b: string) => Promise<boolean>) { this.connectionAuthorizer = authorizer; }
+  setTripAuthorizer(authorizer: (tripId: string, userId: string) => Promise<boolean>) { this.tripAuthorizer = authorizer; }
   setRestrictionChecker(checker: (userId: string) => Promise<boolean>) { this.restrictionChecker = checker; }
 
   async initialize() {
@@ -29,9 +31,10 @@ export class MessagingStore {
   private db() { if (!this.pool) throw new Error('Messaging database is not initialized'); return this.pool; }
   private blocked(a: string, b: string) { return this.blocks.has(`${a}:${b}`) || this.blocks.has(`${b}:${a}`); }
 
-  async createConversation(userId: string, participantIds: string[], kind: 'connection' | 'trip' = 'connection') {
+  async createConversation(userId: string, participantIds: string[], kind: 'connection' | 'trip' = 'connection', tripId?: string) {
     const participants = [...new Set([userId, ...participantIds])];
     if (participants.length < 2 || participants.length > 20 || participants.some((id) => this.blocked(userId, id))) return { error: 'forbidden' as const };
+    if (kind === 'trip' && (!tripId || !this.tripAuthorizer || !(await Promise.all(participants.map((id) => this.tripAuthorizer!(tripId, id)))).every(Boolean))) return { error: 'trip_membership_required' as const };
     if (kind === 'connection' && this.connectionAuthorizer && !(await this.connectionAuthorizer(userId, participants[1]))) return { error: 'connection_required' as const };
     if (this.pool) {
       const db = this.db();
@@ -41,25 +44,25 @@ export class MessagingStore {
         const [rows] = await db.query<RowDataPacket[]>('SELECT COUNT(*) AS total FROM travel_connections a JOIN travel_connections b ON b.sender_id=a.receiver_id AND b.receiver_id=a.sender_id WHERE a.sender_id=? AND a.receiver_id=? AND a.status=\'connected\' AND b.status=\'connected\'', [userId, participants[1]]);
         if (Number(rows[0]?.total) < 1) return { error: 'connection_required' as const };
       }
-      const [candidates] = await db.query<RowDataPacket[]>('SELECT c.id FROM conversations c JOIN conversation_participants p ON p.conversation_id=c.id AND p.user_id=? AND p.removed_at IS NULL WHERE c.kind=?', [userId, kind]);
+      const [candidates] = await db.query<RowDataPacket[]>('SELECT c.id FROM conversations c JOIN conversation_participants p ON p.conversation_id=c.id AND p.user_id=? AND p.removed_at IS NULL WHERE c.kind=? AND (c.kind=\'connection\' OR c.trip_id=?)', [userId, kind, tripId ?? null]);
       for (const candidate of candidates) {
         const [rows] = await db.query<RowDataPacket[]>('SELECT user_id FROM conversation_participants WHERE conversation_id=? AND removed_at IS NULL', [candidate.id]);
         const existingParticipants = rows.map((row) => String(row.user_id)).sort();
         if (existingParticipants.length === participants.length && existingParticipants.every((id, index) => id === participants.slice().sort()[index])) return { conversation: { id: String(candidate.id) } };
       }
       const id = randomUUID(); const conn = await db.getConnection();
-      try { await conn.beginTransaction(); await conn.query('INSERT INTO conversations (id,kind,created_by) VALUES (?,?,?)', [id, kind, userId]); for (const participant of participants) await conn.query('INSERT INTO conversation_participants (conversation_id,user_id) VALUES (?,?)', [id, participant]); await conn.commit(); return { conversation: { id, kind, createdBy: userId, createdAt: new Date().toISOString() } }; } catch (error) { await conn.rollback(); throw error; } finally { conn.release(); }
+      try { await conn.beginTransaction(); await conn.query('INSERT INTO conversations (id,kind,trip_id,created_by) VALUES (?,?,?,?)', [id, kind, tripId ?? null, userId]); for (const participant of participants) await conn.query('INSERT INTO conversation_participants (conversation_id,user_id) VALUES (?,?)', [id, participant]); await conn.commit(); return { conversation: { id, kind, ...(tripId ? { tripId } : {}), createdBy: userId, createdAt: new Date().toISOString() } }; } catch (error) { await conn.rollback(); throw error; } finally { conn.release(); }
     }
     if (!this.memory) throw new Error('Database is required');
     for (const conversation of this.conversations.values()) if (conversation.kind === kind && participants.every((id) => conversation.participants.has(id)) && conversation.participants.size === participants.length) return { conversation };
-    const conversation: MemoryConversation = { id: randomUUID(), kind, createdBy: userId, createdAt: new Date().toISOString(), participants: new Set(participants), messages: [] }; this.conversations.set(conversation.id, conversation); return { conversation };
+    const conversation: MemoryConversation = { id: randomUUID(), kind, ...(tripId ? { tripId } : {}), createdBy: userId, createdAt: new Date().toISOString(), participants: new Set(participants), messages: [] }; this.conversations.set(conversation.id, conversation); return { conversation };
   }
 
   async isParticipant(conversationId: string, userId: string) {
-    if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT 1 FROM conversation_participants WHERE conversation_id=? AND user_id=? AND removed_at IS NULL LIMIT 1', [conversationId, userId]); return Boolean(rows[0]); }
-    return this.conversations.get(conversationId)?.participants.has(userId) ?? false;
+    if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT 1 FROM conversations c JOIN conversation_participants p ON p.conversation_id=c.id AND p.user_id=? AND p.removed_at IS NULL LEFT JOIN trips t ON t.id=c.trip_id WHERE c.id=? AND (c.kind=\'connection\' OR (c.kind=\'trip\' AND t.id IS NOT NULL AND (t.organizer_user_id=? OR EXISTS (SELECT 1 FROM trip_participants tp WHERE tp.trip_id=t.id AND tp.user_id=?)))) LIMIT 1', [userId, conversationId, userId, userId]); return Boolean(rows[0]); }
+    const c = this.conversations.get(conversationId); return Boolean(c?.participants.has(userId) && (c.kind === 'connection' || (c.tripId && this.tripAuthorizer && await this.tripAuthorizer(c.tripId, userId))));
   }
-  async listConversations(userId: string) { if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT c.id,c.kind,c.created_by,c.created_at,MAX(m.created_at) AS last_message_at FROM conversations c JOIN conversation_participants p ON p.conversation_id=c.id AND p.user_id=? AND p.removed_at IS NULL LEFT JOIN messages m ON m.conversation_id=c.id AND m.deleted_at IS NULL GROUP BY c.id ORDER BY COALESCE(last_message_at,c.created_at) DESC', [userId]); return rows.map((r) => ({ id: String(r.id), kind: r.kind, createdBy: String(r.created_by), createdAt: new Date(r.created_at).toISOString() })); } return [...this.conversations.values()].filter((c) => c.participants.has(userId)).map(({ participants: _p, messages: _m, ...c }) => c); }
+  async listConversations(userId: string) { if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT c.id,c.kind,c.trip_id,c.created_by,c.created_at,MAX(m.created_at) AS last_message_at FROM conversations c JOIN conversation_participants p ON p.conversation_id=c.id AND p.user_id=? AND p.removed_at IS NULL LEFT JOIN trips t ON t.id=c.trip_id LEFT JOIN messages m ON m.conversation_id=c.id AND m.deleted_at IS NULL WHERE c.kind=\'connection\' OR (c.kind=\'trip\' AND t.id IS NOT NULL AND (t.organizer_user_id=? OR EXISTS (SELECT 1 FROM trip_participants tp WHERE tp.trip_id=t.id AND tp.user_id=?))) GROUP BY c.id ORDER BY COALESCE(last_message_at,c.created_at) DESC', [userId, userId, userId]); return rows.map((r) => ({ id: String(r.id), kind: r.kind, ...(r.trip_id ? { tripId: String(r.trip_id) } : {}), createdBy: String(r.created_by), createdAt: new Date(r.created_at).toISOString() })); } return (await Promise.all([...this.conversations.values()].filter((c) => c.participants.has(userId)).map(async (c) => (await this.isParticipant(c.id, userId) ? c : null)))).filter((c): c is MemoryConversation => Boolean(c)).map(({ participants: _p, messages: _m, ...c }) => c); }
   async listMessages(conversationId: string, userId: string, before?: string, limit = 50) { if (!(await this.isParticipant(conversationId, userId))) return { error: 'forbidden' as const }; const safeLimit = Math.min(Math.max(limit, 1), 100); if (this.pool) { const [rows] = await this.db().query<RowDataPacket[]>('SELECT id,conversation_id,sender_id,body,created_at FROM messages WHERE conversation_id=? AND deleted_at IS NULL AND (? IS NULL OR created_at<?) ORDER BY created_at DESC,id DESC LIMIT ?', [conversationId, before ?? null, before ?? null, safeLimit]); return { messages: rows.reverse().map((r) => ({ id: String(r.id), conversationId: String(r.conversation_id), senderId: String(r.sender_id), body: String(r.body), createdAt: new Date(r.created_at).toISOString() })) }; } const c = this.conversations.get(conversationId); if (!c) return { messages: [] }; return { messages: c.messages.slice(-safeLimit) };
   }
   async sendMessage(conversationId: string, senderId: string, body: string) { const clean = body.trim(); if (!clean || clean.length > 4000) return { error: 'invalid' as const }; if (this.restrictionChecker && await this.restrictionChecker(senderId)) return { error: 'restricted' as const }; if (!(await this.isParticipant(conversationId, senderId))) return { error: 'forbidden' as const }; if (this.pool) { const [blocked] = await this.db().query<RowDataPacket[]>('SELECT 1 FROM conversation_participants p JOIN blocks b ON ((b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocked_id=? AND b.blocker_id=p.user_id)) WHERE p.conversation_id=? AND p.user_id<>? AND p.removed_at IS NULL LIMIT 1', [senderId,senderId,conversationId,senderId]); if(blocked[0]) return { error:'forbidden' as const }; const id = randomUUID(); await this.db().query('INSERT INTO messages (id,conversation_id,sender_id,body) VALUES (?,?,?,?)', [id, conversationId, senderId, clean]); const message = { id, conversationId, senderId, body: clean, createdAt: new Date().toISOString() }; await this.notifyParticipants(conversationId, senderId, message); this.broadcast(conversationId, message); return { message }; } const c = this.conversations.get(conversationId); if (!c) return { error: 'not_found' as const }; if ([...c.participants].some((id) => id !== senderId && this.blocked(senderId, id))) return { error: 'forbidden' as const }; const message = { id: randomUUID(), conversationId, senderId, body: clean, createdAt: new Date().toISOString() }; c.messages.push(message); this.broadcast(conversationId, message); return { message }; }

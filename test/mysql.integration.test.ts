@@ -66,6 +66,7 @@ integration('persists core journeys and enforces MySQL authorization and capacit
     travel.setNotifier((userId, type, body, actorId, entityId, dedupeKey) => messaging.addNotification(userId, type, body, actorId, entityId, dedupeKey));
     moderation.setNotifier((userId, type, body, actorId, entityId, dedupeKey) => messaging.addNotification(userId, type, body, actorId, entityId, dedupeKey));
     messaging.setConnectionAuthorizer((a, b) => travel.areConnected(a, b));
+    messaging.setTripAuthorizer((tripId, userId) => travel.isTripMember(tripId, userId));
     messaging.setRestrictionChecker((userId) => moderation.hasRestriction(userId, 'messaging'));
 
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -104,6 +105,11 @@ integration('persists core journeys and enforces MySQL authorization and capacit
   assert.equal((await messaging.listMessages(conversation.conversation.id, guest.id)).messages[0]?.body, 'Persisted hello');
   assert.equal(await messaging.markRead(conversation.conversation.id, guest.id, sent.message.id), true);
   assert.equal((await messaging.listNotifications(guest.id, true)).some((item) => item.type === 'new_message'), true);
+  assert.equal((await messaging.createConversation(owner.id, [other.id], 'trip', trip.id)).error, 'trip_membership_required');
+  const tripConversation = await messaging.createConversation(owner.id, [guest.id], 'trip', trip.id);
+  assert.ok('conversation' in tripConversation);
+  assert.equal((await messaging.listMessages(tripConversation.conversation.id, other.id)).error, 'forbidden');
+  assert.equal((await messaging.sendMessage(tripConversation.conversation.id, other.id, 'Unauthorized trip message')).error, 'forbidden');
   await messaging.block(guest.id, owner.id);
   assert.equal((await messaging.sendMessage(conversation.conversation.id, owner.id, 'Blocked hello')).error, 'forbidden');
 
@@ -127,6 +133,34 @@ integration('persists core journeys and enforces MySQL authorization and capacit
     const closeErrors = closeResults.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map((result) => result.reason);
     if (closeErrors.length) throw new AggregateError(closeErrors, 'Failed to close MySQL integration-test stores.');
   }
+});
+
+integration('locks trip lifecycle and join approval in the same MySQL transaction', async () => {
+  process.env.NODE_ENV = 'test';
+  process.env.ALLOW_MEMORY_FALLBACK = 'false';
+  const travel = new TravelStore();
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await travel.initialize();
+    const owner = await travel.register(`mysql-race-owner-${suffix}@example.com`, 'correct-horse-battery', 'Race Owner');
+    const guest = await travel.register(`mysql-race-guest-${suffix}@example.com`, 'correct-horse-battery', 'Race Guest');
+    assert.ok(owner && guest);
+    const trip = await travel.createTrip(owner, { destinationId: 'rishikesh', title: `MySQL lifecycle race ${suffix}`, summary: 'Verifies approval cannot bypass a closed lifecycle.', startDate: 'Nov 01', endDate: 'Nov 03', duration: '3 days', budget: 9000, capacity: 3, style: 'Adventure', imageUrl: 'https://example.com/mysql-race.jpg' });
+    assert.ok(trip);
+    const request = await travel.requestJoin(trip.id, guest.id);
+    assert.ok('request' in request);
+    assert.equal((await travel.transitionTrip(trip.id, owner.id, 'ongoing')).status, 'ongoing');
+    const [lifecycle, approval] = await Promise.all([
+      travel.transitionTrip(trip.id, owner.id, 'completed'),
+      travel.updateJoinRequest(request.request.id, owner.id, 'approved'),
+    ]);
+    assert.equal('error' in lifecycle ? lifecycle.error : lifecycle.status, 'completed');
+    if ('request' in approval) {
+      const current = await travel.getTrip(trip.id);
+      assert.equal(current?.status, 'completed');
+      assert.equal(current?.members, 2);
+    } else assert.equal(approval.error, 'unavailable');
+  } finally { await travel.close(); }
 });
 
 integration('persists immutable completion evidence and permits one eligible organizer review', async () => {
