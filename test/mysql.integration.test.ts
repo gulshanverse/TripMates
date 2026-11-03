@@ -1,12 +1,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import mysql from 'mysql2/promise';
+import mysql, { type RowDataPacket } from 'mysql2/promise';
 import { TravelStore } from '../src/server/store';
 import { MessagingStore } from '../src/server/messaging';
 import { ModerationStore } from '../src/server/moderation';
 
 const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl ? test : test.skip;
+
+
+integration('creates a trip with matching MySQL insert columns, placeholders, and parameters', async () => {
+  process.env.NODE_ENV = 'test';
+  process.env.ALLOW_MEMORY_FALLBACK = 'false';
+  const travel = new TravelStore();
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  await travel.initialize();
+  try {
+    const owner = await travel.register(`mysql-trip-regression-${suffix}@example.com`, 'correct-horse-battery', 'MySQL Trip Regression');
+    assert.ok(owner);
+    const trip = await travel.createTrip(owner, {
+      destinationId: 'rishikesh',
+      title: `MySQL placeholder regression ${suffix}`,
+      summary: 'Verifies that MySQL-backed trip creation binds every insert value.',
+      startDate: 'Nov 01',
+      endDate: 'Nov 03',
+      duration: '3 days',
+      budget: 9000,
+      capacity: 2,
+      style: 'Adventure',
+      imageUrl: 'https://example.com/mysql-regression.jpg',
+    });
+    assert.ok(trip);
+
+    const db = await mysql.createConnection(databaseUrl!);
+    try {
+      const [rows] = await db.query<RowDataPacket[]>('SELECT id,title,organizer_user_id,members,status FROM trips WHERE id=?', [trip.id]);
+      assert.deepEqual(rows[0], {
+        id: trip.id,
+        title: trip.title,
+        organizer_user_id: owner.id,
+        members: 1,
+        status: 'published',
+      });
+    } finally {
+      await db.end();
+    }
+  } finally {
+    await travel.close();
+  }
+});
 
 integration('persists core journeys and enforces MySQL authorization and capacity', async () => {
   process.env.NODE_ENV = 'test';
