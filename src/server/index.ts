@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
 import { z } from 'zod';
 import { travelStore } from './store';
@@ -11,7 +12,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
 const port = Number(process.env.PORT ?? 3000);
 const tripIdSchema = z.string().min(1).max(64);
-const visitorId = 'demo-visitor';
+const visitorCookie = 'tm_visitor';
+
+function getVisitorId(req: express.Request, res: express.Response) {
+  const existing = req.headers.cookie?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${visitorCookie}=`))?.split('=')[1];
+  if (existing && /^[a-f0-9-]{36}$/i.test(existing)) return existing;
+  const visitorId = randomUUID();
+  res.setHeader('Set-Cookie', `${visitorCookie}=${visitorId}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=31536000`);
+  return visitorId;
+}
 
 async function start() {
   await travelStore.initialize();
@@ -25,9 +34,10 @@ async function start() {
   });
 
   app.get('/api/health', (_req, res) => res.json({ ok: true, persistence: travelStore.persistenceMode }));
-  app.get('/api/overview', async (_req, res) => {
+  app.get('/api/overview', async (req, res) => {
+    const visitorId = getVisitorId(req, res);
     const [destinationList, tripList, buddyList] = await Promise.all([
-      travelStore.listDestinations(), travelStore.listTrips(), travelStore.listBuddies(),
+      travelStore.listDestinations(), travelStore.listTrips(undefined, visitorId), travelStore.listBuddies(visitorId),
     ]);
     res.json({
       destinations: destinationList,
@@ -38,27 +48,27 @@ async function start() {
   });
   app.get('/api/trips', async (req, res) => {
     const destination = typeof req.query.destination === 'string' ? req.query.destination : undefined;
-    res.json(await travelStore.listTrips(destination));
+    res.json(await travelStore.listTrips(destination, getVisitorId(req, res)));
   });
   app.get('/api/trips/:tripId', async (req, res) => {
     const parsed = tripIdSchema.safeParse(req.params.tripId);
     if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' });
-    const trip = await travelStore.getTrip(parsed.data);
+    const trip = await travelStore.getTrip(parsed.data, getVisitorId(req, res));
     if (!trip) return res.status(404).json({ message: 'Trip not found' });
     return res.json(trip);
   });
   app.post('/api/trips/:tripId/save', async (req, res) => {
     const parsed = tripIdSchema.safeParse(req.params.tripId);
     if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' });
-    const saved = await travelStore.saveTrip(parsed.data, visitorId);
+    const saved = await travelStore.saveTrip(parsed.data, getVisitorId(req, res));
     if (!saved) return res.status(404).json({ message: 'Trip not found' });
     return res.status(201).json({ saved: true, tripId: parsed.data });
   });
-  app.get('/api/buddies', async (_req, res) => res.json(await travelStore.listBuddies()));
+  app.get('/api/buddies', async (req, res) => res.json(await travelStore.listBuddies(getVisitorId(req, res))));
   app.post('/api/buddies/:buddyId/interest', async (req, res) => {
     const parsed = tripIdSchema.safeParse(req.params.buddyId);
     if (!parsed.success) return res.status(400).json({ message: 'Invalid buddy id' });
-    const interested = await travelStore.expressInterest(parsed.data, visitorId);
+    const interested = await travelStore.expressInterest(parsed.data, getVisitorId(req, res));
     if (!interested) return res.status(404).json({ message: 'Traveler not found' });
     return res.status(201).json({ interested: true, buddyId: parsed.data });
   });

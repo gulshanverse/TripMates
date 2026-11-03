@@ -28,16 +28,16 @@ export class TravelStore {
     }
   }
 
-  async listTrips(destinationId?: string) {
+  async listTrips(destinationId?: string, visitorId = 'anonymous') {
     const source = destinationId ? trips.filter((trip) => trip.destinationId === destinationId) : trips;
-    const saved = await this.savedIds('demo-visitor');
+    const saved = await this.savedIds(visitorId);
     return source.map((trip) => ({ ...trip, saved: saved.has(trip.id) }));
   }
 
-  async getTrip(id: string) {
+  async getTrip(id: string, visitorId = 'anonymous') {
     const trip = trips.find((item) => item.id === id);
     if (!trip) return null;
-    const saved = await this.savedIds('demo-visitor');
+    const saved = await this.savedIds(visitorId);
     return { ...trip, saved: saved.has(trip.id) };
   }
 
@@ -45,8 +45,8 @@ export class TravelStore {
     return destinations;
   }
 
-  async listBuddies() {
-    const interests = await this.interestIds('demo-visitor');
+  async listBuddies(visitorId = 'anonymous') {
+    const interests = await this.interestIds(visitorId);
     return buddies.map((buddy) => ({ ...buddy, interested: interests.has(buddy.id) }));
   }
 
