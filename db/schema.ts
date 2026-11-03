@@ -1,4 +1,4 @@
-import { int, mysqlTable, timestamp, varchar, text, decimal, boolean, uniqueIndex, index } from 'drizzle-orm/mysql-core';
+import { int, mysqlTable, timestamp, varchar, text, decimal, boolean, uniqueIndex, index, json, mysqlEnum } from 'drizzle-orm/mysql-core';
 
 export const destinations = mysqlTable('destinations', {
   id: varchar('id', { length: 64 }).primaryKey(),
@@ -45,3 +45,18 @@ export const buddyInterests = mysqlTable('buddy_interests', {
   buddyId: varchar('buddy_id', { length: 64 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({ visitorBuddyUnique: uniqueIndex('buddy_interests_visitor_buddy_unique').on(table.visitorId, table.buddyId) }));
+
+export const users = mysqlTable('users', {
+  id: varchar('id', { length: 36 }).primaryKey(), email: varchar('email', { length: 254 }).notNull(), displayName: varchar('display_name', { length: 80 }).notNull(),
+  passwordHash: varchar('password_hash', { length: 128 }).notNull(), passwordSalt: varchar('password_salt', { length: 64 }).notNull(), emailVerified: boolean('email_verified').notNull().default(false), deactivatedAt: timestamp('deactivated_at'), createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({ emailUnique: uniqueIndex('users_email_unique').on(table.email) }));
+
+export const userProfiles = mysqlTable('user_profiles', {
+  userId: varchar('user_id', { length: 36 }).primaryKey(), photoUrl: varchar('photo_url', { length: 500 }), age: int('age'), homeLocation: varchar('home_location', { length: 120 }), preferredDestinations: json('preferred_destinations').notNull(), travelInterests: json('travel_interests').notNull(), travelStyle: varchar('travel_style', { length: 60 }), budgetRange: varchar('budget_range', { length: 60 }), languages: json('languages').notNull(), travelPreferences: varchar('travel_preferences', { length: 500 }), visibility: mysqlEnum('visibility', ['discoverable', 'private']).notNull().default('discoverable'), updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const tripJoinRequests = mysqlTable('trip_join_requests', {
+  id: varchar('id', { length: 36 }).primaryKey(), tripId: varchar('trip_id', { length: 64 }).notNull(), userId: varchar('user_id', { length: 36 }).notNull(), status: mysqlEnum('status', ['pending', 'approved', 'rejected', 'cancelled']).notNull().default('pending'), createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({ tripStatusIdx: index('trip_join_requests_trip_status_idx').on(table.tripId, table.status) }));
+
+export const tripParticipants = mysqlTable('trip_participants', { tripId: varchar('trip_id', { length: 64 }).notNull(), userId: varchar('user_id', { length: 36 }).notNull(), joinedAt: timestamp('joined_at').defaultNow().notNull() });
