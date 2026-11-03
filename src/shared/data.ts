@@ -1,4 +1,5 @@
 import type { Buddy, Destination, Trip } from './types';
+import type { DestinationDetail } from './destination';
 
 export const destinations: Destination[] = [
   {
@@ -163,3 +164,33 @@ export const buddies: Buddy[] = [
     travelStyle: 'Culture-led', languages: ['English', 'Malayalam', 'Hindi'], dates: 'Nov 18 – 26', interests: ['Books', 'History', 'Street food'], verified: false,
   },
 ];
+
+
+export const rishikeshDetail = {
+  ...destinations[0],
+  introduction: 'Where the Ganga leaves the mountains, Rishikesh makes room for both movement and stillness.',
+  about: 'Rishikesh is a good first chapter for a TripMates journey: an easy base for river days, forest walks, yoga, local food and conversations that do not need to be rushed. Treat this as editorial guidance, not a booking catalogue — conditions, access and operator availability change by season.',
+  highlights: ['River mornings on the Ganga', 'Rafting and valley views', 'Yoga, ashrams and evening aarti', 'Waterfalls, forests and short hikes'],
+  experiences: [
+    { id: 'river-rafting', name: 'River rafting', category: 'Adventure', description: 'A classic Rishikesh day on the Ganga, best planned with a licensed local operator and current river conditions in mind.', imageUrl: 'https://images.unsplash.com/photo-1530866495561-507c8c6b2f5c?auto=format&fit=crop&w=1200&q=85', duration: 'Half day', cost: '₹1,500–₹3,500', season: 'Usually cooler, drier months', safety: 'Wear a life jacket, follow the guide, and do not raft when conditions are unsafe.' },
+    { id: 'neer-garh', name: 'Neer Garh waterfall', category: 'Nature', description: 'A forested outing with pools and shaded trail sections — go early, carry water and leave the route cleaner than you found it.', imageUrl: 'https://images.unsplash.com/photo-1433086966358-54859d0ed716?auto=format&fit=crop&w=1200&q=85', duration: '2–4 hours', cost: 'Low-cost local outing', season: 'Check trail conditions after rain', safety: 'Use grippy footwear and take care around wet rock and fast-moving water.' },
+    { id: 'ganga-aarti', name: 'Triveni Ghat aarti', category: 'Spirituality', description: 'An evening riverside ritual and a chance to experience Rishikesh at a slower, more reflective pace.', imageUrl: 'https://images.unsplash.com/photo-1609947017136-9daf32a2c0b0?auto=format&fit=crop&w=1200&q=85', duration: '1–2 hours', cost: 'No fixed entry cost', season: 'Year-round; expect crowds', safety: 'Keep valuables secure and respect photography boundaries.' },
+    { id: 'beatles-ashram', name: 'Beatles Ashram', category: 'Culture', description: 'A quiet walk through murals, forest paths and a layered piece of the city’s modern cultural history.', imageUrl: 'https://images.unsplash.com/photo-1564507592333-c60657eea523?auto=format&fit=crop&w=1200&q=85', duration: '2–3 hours', cost: 'Entry fee may apply', season: 'Year-round; check opening hours', safety: 'Stay on marked paths and plan around heat in exposed areas.' },
+    { id: 'little-cafes', name: 'Tapovan café trail', category: 'Food', description: 'A low-key way to meet the neighbourhood: chai, simple breakfasts and a few unplanned turns between the river and the hills.', imageUrl: 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=1200&q=85', duration: '2–4 hours', cost: '₹500–₹1,200', season: 'Year-round', safety: 'Choose busy, well-reviewed spaces and keep hydration in mind.' },
+    { id: 'kunjapuri', name: 'Kunjapuri sunrise', category: 'Nature', description: 'A pre-dawn viewpoint outing for clear mountain horizons and a little breathing room above the valley.', imageUrl: 'https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=1200&q=85', duration: 'Half day', cost: 'Transport-dependent', season: 'Clear mornings are best', safety: 'Use a trusted driver or group, carry layers and avoid cliff edges.' },
+  ],
+  travelInfo: [
+    { label: 'Best for', value: '3–5 day resets, first group trips, mixed pace' },
+    { label: 'Getting there', value: 'Dehradun airport, Haridwar rail, road connections' },
+    { label: 'Around town', value: 'Auto-rickshaws, taxis, walking and local transfers' },
+    { label: 'Pack', value: 'Quick-dry layers, walking shoes, reusable bottle' },
+  ],
+  budgets: [
+    { label: 'Backpacker', value: '₹1,200–₹2,200 / day', note: 'Hostel, local meals and shared transport; excludes travel to Rishikesh.' },
+    { label: 'Comfortable', value: '₹2,500–₹5,000 / day', note: 'Private room, café meals and a mix of planned experiences.' },
+    { label: 'Activity-led', value: '₹5,000+ / day', note: 'Add rafting, private transfers or guided experiences as needed.' },
+  ],
+  recommendedDurations: ['A long weekend', '4 days / 3 nights', '5–7 days, slower pace'],
+  safetyGuidance: ['Treat river and monsoon conditions as changeable; check local guidance before adventure activities.', 'For rafting, trekking and transport, choose operators with current, verifiable credentials rather than relying on editorial listings.', 'Respect ashram, temple and community spaces; ask before photographing people or rituals.', 'Keep an offline address, emergency contacts and a little cash for patchy connectivity.'],
+  relatedDestinations: destinations.slice(1),
+} satisfies DestinationDetail;

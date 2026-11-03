@@ -5,6 +5,7 @@ import {
   Users, WalletCards, X, SlidersHorizontal, Clock3, Flame, Bell,
 } from 'lucide-react';
 import type { Buddy, Destination, OverviewResponse, Trip } from '../shared/types';
+import type { DestinationResponse, ExperienceCategory } from '../shared/destination';
 
 const HERO_IMAGE = '/manus-storage/async-images/AlllBOYOC7590BpNhzPnpW/image-1.webp';
 const money = (value: number) => `₹${value.toLocaleString('en-IN')}`;
@@ -69,6 +70,7 @@ function App() {
         <main>
           {path === '/' && <Home data={data} onNavigate={navigate} onToast={showToast} heroImage={HERO_IMAGE} />}
           {path === '/discover' && <Discover data={data} onNavigate={navigate} onToast={showToast} />}
+          {path === '/destinations/rishikesh' && <DestinationPage onNavigate={navigate} onToast={showToast} />}
           {path === '/buddies' && <Buddies data={data} onToast={showToast} />}
           {path === '/how-it-works' && <HowItWorks onNavigate={navigate} />}
           {path === '/safety' && <Safety onNavigate={navigate} />}
@@ -78,7 +80,7 @@ function App() {
           {path === '/messages' && <MessagesPage onToast={showToast} />}
           {path === '/connections' && <ConnectionsPage onToast={showToast} onNavigate={navigate} />}
           {tripId && <TripDetail trip={data.trips.find((item) => item.id === tripId)} onNavigate={navigate} onToast={showToast} />}
-          {!['/', '/discover', '/buddies', '/how-it-works', '/safety', '/auth', '/profile', '/report', '/messages', '/connections'].includes(path) && !tripId && <NotFound onNavigate={navigate} />}
+          {!['/', '/discover', '/destinations/rishikesh', '/buddies', '/how-it-works', '/safety', '/auth', '/profile', '/report', '/messages', '/connections'].includes(path) && !tripId && <NotFound onNavigate={navigate} />}
         </main>
       )}
       <Footer onNavigate={navigate} />
@@ -136,10 +138,30 @@ function TripCard({ trip, onOpen, onToast, featured = false }: { trip: Trip; onO
   </article>;
 }
 
+function DestinationPage({ onNavigate, onToast }: { onNavigate: (path: string) => void; onToast: (message: string) => void }) {
+  const [data, setData] = useState<DestinationResponse | null>(null);
+  const [category, setCategory] = useState<'All' | ExperienceCategory>('All');
+  const [error, setError] = useState('');
+  useEffect(() => { fetch('/api/destinations/rishikesh').then((response) => { if (!response.ok) throw new Error('Destination guide could not be loaded.'); return response.json(); }).then(setData).catch((e) => setError(e.message)); }, []);
+  if (error) return <section className="simple-page page-width section-pad"><div className="section-kicker">DESTINATION GUIDE</div><h1>We lost the<br /><em>trail for a moment.</em></h1><p className="page-lead">{error}</p><button className="primary-button" onClick={() => window.location.reload()}>Try again</button></section>;
+  if (!data) return <LoadingState />;
+  const { destination } = data;
+  const filtered = category === 'All' ? destination.experiences : destination.experiences.filter((experience) => experience.category === category);
+  return <section className="destination-page">
+    <div className="destination-hero" style={{ backgroundImage: `url(${destination.imageUrl})` }}><div className="destination-hero-scrim" /><div className="page-width destination-hero-content"><button className="back-link light-back" onClick={() => onNavigate('/')}><ArrowLeft size={16} /> Back to TripMates</button><div className="eyebrow light"><span className="eyebrow-dot" /> {destination.region} / {destination.country}</div><h1>{destination.name}<br /><em>{destination.mood}.</em></h1><p>{destination.introduction}</p><div className="destination-hero-meta"><span><MapPinned size={14} /> Start with a place, not a package</span><span><ShieldCheck size={14} /> Editorial guide · updated for discovery</span></div></div></div>
+    <div className="page-width destination-main"><div className="destination-main-grid"><div><div className="section-kicker">ABOUT THE DESTINATION</div><h2>Leave room for<br /><em>the river to lead.</em></h2></div><div><p className="destination-about">{destination.about}</p><div className="highlight-list">{destination.highlights.map((highlight) => <span key={highlight}><Check size={15} /> {highlight}</span>)}</div></div></div>
+      <div className="experience-section"><div className="section-heading"><div><div className="section-kicker">THE GOOD STUFF</div><h2>Experiences with texture.</h2></div><span className="editorial-note">Recommendations, not bookable inventory</span></div><div className="destination-filter-row">{(['All', 'Adventure', 'Nature', 'Spirituality', 'Culture', 'Food'] as const).map((item) => <button className={category === item ? 'filter-chip active' : 'filter-chip'} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div><div className="experience-grid">{filtered.map((experience) => <article className="experience-card" key={experience.id}><img src={experience.imageUrl} alt={experience.name} /><div className="experience-card-body"><div className="experience-category">{experience.category}</div><h3>{experience.name}</h3><p>{experience.description}</p><div className="experience-facts"><span><Clock3 size={13} /> {experience.duration}</span><span>{experience.cost}</span></div><small>{experience.season} · {experience.safety}</small></div></article>)}</div></div>
+      <div className="destination-info-grid"><div><div className="section-kicker">PLAN YOUR WAY</div><h2>Useful before<br /><em>you pack.</em></h2><div className="info-list">{destination.travelInfo.map((item) => <div key={item.label}><span>{item.label}</span><strong>{item.value}</strong></div>)}</div></div><div className="budget-panel"><div className="section-kicker">ROUGH BUDGET RANGES</div><p className="panel-note">Planning ranges only. Travel dates, transport, season and activity choices can change the final cost.</p>{destination.budgets.map((budget) => <div className="budget-row" key={budget.label}><div><strong>{budget.label}</strong><span>{budget.note}</span></div><b>{budget.value}</b></div>)}</div></div>
+      <div className="tripmates-destination-grid"><div><div className="section-kicker">PEOPLE ALREADY PLANNING</div><h2>Find your<br /><em>kind of pace.</em></h2><p className="page-lead">These are current TripMates listings and discoverable travelers, kept separate from editorial recommendations.</p><button className="text-link" onClick={() => onNavigate('/discover')}>See all Rishikesh trips <ArrowUpRight size={16} /></button></div><div className="destination-trip-row">{data.trips.slice(0, 2).map((trip) => <TripCard key={trip.id} trip={trip} onOpen={() => onNavigate(`/trips/${trip.id}`)} onToast={onToast} />)}</div></div>
+      <div className="safety-strip"><div><ShieldCheck size={23} /><div><div className="section-kicker light">TRAVEL WITH CONTEXT</div><h2>Keep the good sense.</h2><p>Rishikesh is welcoming, but nature and crowded public spaces deserve attention. This is guidance, not an official safety notice.</p></div></div><ul>{destination.safetyGuidance.slice(0, 3).map((item) => <li key={item}>{item}</li>)}</ul></div>
+    </div>
+  </section>;
+}
+
 function Discover({ data, onNavigate, onToast }: { data: OverviewResponse; onNavigate: (path: string) => void; onToast: (message: string) => void }) {
   const [style, setStyle] = useState('All styles');
   const filtered = style === 'All styles' ? data.trips : data.trips.filter((trip) => trip.style === style);
-  return <section className="inner-page page-width section-pad"><div className="page-intro"><div><div className="section-kicker">DISCOVER GROUP TRIPS</div><h1>Plans worth<br /><em>showing up for.</em></h1></div><p>Small groups, clear plans, and the kind of itinerary that leaves space for the unexpected. Start with Rishikesh, then keep the map open.</p></div><div className="filter-row"><div className="filter-label"><SlidersHorizontal size={15} /> Filter by pace</div>{['All styles', 'Slow & scenic', 'Adventure', 'Culture-led', 'Wellness'].map((item) => <button key={item} className={style === item ? 'filter-chip active' : 'filter-chip'} onClick={() => setStyle(item)}>{item}</button>)}</div><div className="discover-layout"><div className="trip-grid">{filtered.map((trip) => <TripCard key={trip.id} trip={trip} onOpen={() => onNavigate(`/trips/${trip.id}`)} onToast={onToast} />)}</div><aside className="side-note"><div className="side-note-top"><span className="eyebrow-dot" /> PILOT DESTINATION</div><img src={data.destinations[0].imageUrl} alt="Rishikesh river" /><h3>Rishikesh, Uttarakhand</h3><p>{data.destinations[0].description}</p><div className="side-note-stat"><strong>24</strong><span>open trips<br />to explore</span></div><button className="text-link" onClick={() => onToast('Destination details are being mapped now.')}>Open destination <ArrowUpRight size={16} /></button></aside></div></section>;
+  return <section className="inner-page page-width section-pad"><div className="page-intro"><div><div className="section-kicker">DISCOVER GROUP TRIPS</div><h1>Plans worth<br /><em>showing up for.</em></h1></div><p>Small groups, clear plans, and the kind of itinerary that leaves space for the unexpected. Start with Rishikesh, then keep the map open.</p></div><div className="filter-row"><div className="filter-label"><SlidersHorizontal size={15} /> Filter by pace</div>{['All styles', 'Slow & scenic', 'Adventure', 'Culture-led', 'Wellness'].map((item) => <button key={item} className={style === item ? 'filter-chip active' : 'filter-chip'} onClick={() => setStyle(item)}>{item}</button>)}</div><div className="discover-layout"><div className="trip-grid">{filtered.map((trip) => <TripCard key={trip.id} trip={trip} onOpen={() => onNavigate(`/trips/${trip.id}`)} onToast={onToast} />)}</div><aside className="side-note"><div className="side-note-top"><span className="eyebrow-dot" /> PILOT DESTINATION</div><img src={data.destinations[0].imageUrl} alt="Rishikesh river" /><h3>Rishikesh, Uttarakhand</h3><p>{data.destinations[0].description}</p><div className="side-note-stat"><strong>24</strong><span>open trips<br />to explore</span></div><button className="text-link" onClick={() => onNavigate('/destinations/rishikesh')}>Open destination <ArrowUpRight size={16} /></button></aside></div></section>;
 }
 
 function TripDetail({ trip, onNavigate, onToast }: { trip?: Trip; onNavigate: (path: string) => void; onToast: (message: string) => void }) {
