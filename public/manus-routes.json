@@ -1,0 +1,10 @@
+{
+  "routes": [
+    { "path": "/", "title": "TripMates — Travel together" },
+    { "path": "/discover", "title": "Discover trips and travel buddies" },
+    { "path": "/trips/:tripId", "title": "Trip details" },
+    { "path": "/buddies", "title": "Travel buddies" },
+    { "path": "/how-it-works", "title": "How TripMates works" },
+    { "path": "/safety", "title": "Safety at TripMates" }
+  ]
+}
