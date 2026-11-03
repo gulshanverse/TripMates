@@ -43,6 +43,8 @@ integration('creates a trip with matching MySQL insert columns, placeholders, an
         members: 1,
         status: 'published',
       });
+      const [tagRows] = await db.query<RowDataPacket[]>('SELECT tags FROM trips WHERE id=?', [trip.id]);
+      assert.deepEqual(JSON.parse(String(tagRows[0]?.tags)), []);
     } finally {
       await db.end();
     }
