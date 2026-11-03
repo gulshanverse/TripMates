@@ -31,6 +31,12 @@ pnpm db:seed
 
 `pnpm db:push` applies all ordered SQL migrations exactly once through the `schema_migrations` table. Configure a real email provider before enabling verification or reset delivery; `EMAIL_PROVIDER=disabled` is the safe default and no tokens are exposed by the application.
 
+## Messaging and notifications
+
+Migration `0004_messaging_notifications.sql` adds conversations, participants, messages, read states, notifications, and blocks. A conversation is created only by an authenticated participant; duplicate participant rows are rejected by the composite primary key. Connection conversations are intended for mutually accepted travel connections, while trip conversations remain a separate kind. No conversation is created for Travel Dates or romantic consent.
+
+The API includes `POST /api/conversations`, `GET /api/conversations`, `GET/POST /api/conversations/:id/messages`, `POST /api/conversations/:id/read`, `GET /api/conversations/:id/events`, `GET /api/notifications`, `POST /api/notifications/read`, and `POST /api/users/:id/block`. Every conversation and message read/send operation checks backend participant membership. Messages are persisted before the response is returned. Server-Sent Events are used instead of WebSockets because the current Express deployment has no WebSocket adapter; SSE reconnects through the browser's `EventSource` behavior and message IDs prevent duplicate client rendering.
+
 See `plan.md` for the architecture and design system, and `TODO.md` for requirement traceability.
 
 ## Milestone API surface
