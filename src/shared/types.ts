@@ -44,6 +44,9 @@ export interface Trip {
   cancellationPolicy?: string;
   participationPolicy?: string;
   saved?: boolean;
+  experienceType?: string;
+  organizerRating?: number | null;
+  reviewCount?: number;
 }
 
 export interface Buddy {

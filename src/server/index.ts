@@ -11,6 +11,7 @@ import { messagingStore } from './messaging';
 import { moderationStore, type ReportCategory, type ReportTarget, type ReportStatus, type Role, type SanctionType } from './moderation';
 import { reviewsStore } from './reviews';
 import type { TripStatus } from '../shared/types';
+import type { DiscoveryFilters, DiscoverySort } from '../shared/discovery';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
@@ -89,6 +90,12 @@ async function start() {
   app.get('/api/overview', async (req, res) => { const visitorId = getVisitorId(req, res); const [destinationList, tripList, buddyList] = await Promise.all([travelStore.listDestinations(), travelStore.listTrips(undefined, visitorId), travelStore.listBuddies(visitorId)]); res.json({ destinations: destinationList, trips: tripList, buddies: buddyList, stats: { travelers: '12.4k', trips: '480+', destinations: '36' } }); });
   app.get('/api/destinations/:destinationId', async (req, res) => { const parsed = idSchema.safeParse(req.params.destinationId); if (!parsed.success) return res.status(400).json({ message: 'Invalid destination id' }); const detail = await travelStore.getDestinationDetail(parsed.data, getVisitorId(req, res)); return detail ? res.json(detail) : res.status(404).json({ message: 'Destination not found' }); });
   app.get('/api/trips', async (req, res) => { const destination = typeof req.query.destination === 'string' ? req.query.destination : undefined; res.json(await travelStore.listTrips(destination, getVisitorId(req, res))); });
+  app.get('/api/discovery', async (req, res) => {
+    const number = (key: string) => typeof req.query[key] === 'string' && req.query[key] !== '' ? Number(req.query[key]) : undefined;
+    const user = await currentUser(req);
+    const filters: DiscoveryFilters = { destination: typeof req.query.destination === 'string' ? req.query.destination : undefined, query: typeof req.query.q === 'string' ? req.query.q.trim() : undefined, startDate: typeof req.query.startDate === 'string' ? req.query.startDate : undefined, endDate: typeof req.query.endDate === 'string' ? req.query.endDate : undefined, minBudget: number('minBudget'), maxBudget: number('maxBudget'), duration: number('duration'), category: typeof req.query.category === 'string' ? req.query.category as DiscoveryFilters['category'] : undefined, experience: typeof req.query.experience === 'string' ? req.query.experience : undefined, minSeats: number('minSeats'), verifiedOnly: req.query.verified === 'true', minRating: number('minRating'), sort: typeof req.query.sort === 'string' ? req.query.sort as DiscoverySort : undefined, page: number('page'), pageSize: number('pageSize') };
+    return res.json(await travelStore.listTrips(filters.destination, getVisitorId(req, res), filters, user?.profile));
+  });
   app.get('/api/trips/:tripId/reviews', async (req, res) => { return res.json({ reviews: await reviewsStore.listForTrip(req.params.tripId) }); });
   app.post('/api/trips/:tripId/reviews', async (req, res) => { const user = await requireUser(req, res); if (!user) return; if (await rejectRestriction(user.id, 'account', res)) return; const parsed = reviewBody.safeParse(req.body); if (!parsed.success) return res.status(400).json({ message: 'Ratings must be between 1 and 5.' }); const result = await reviewsStore.createReview(user.id, req.params.tripId, parsed.data); if ('error' in result) { const code = result.error === 'duplicate' ? 409 : result.error === 'invalid_rating' || result.error === 'invalid_feedback' ? 400 : 403; return res.status(code).json({ message: result.error === 'duplicate' ? 'You already reviewed this trip.' : 'You can review only an eligible completed trip within the review window.' }); } return res.status(201).json(result); });
   app.get('/api/trips/:tripId', async (req, res) => { const parsed = idSchema.safeParse(req.params.tripId); if (!parsed.success) return res.status(400).json({ message: 'Invalid trip id' }); const trip = await travelStore.getTrip(parsed.data, getVisitorId(req, res)); return trip ? res.json(trip) : res.status(404).json({ message: 'Trip not found' }); });
