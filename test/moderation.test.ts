@@ -29,3 +29,12 @@ test('moderation permissions, sanctions, appeals, verification, and audit trail 
   assert.equal((await store.reviewVerification('admin', 'reported-user', 'verified')).status, 'verified');
   assert.equal((await store.auditLog('admin')).entries.length >= 2, true);
 });
+
+
+test('moderation mutations do not report false success', async () => {
+  const store = new ModerationStore(); await store.initialize();
+  (store as unknown as { roles: Map<string, string> }).roles.set('moderator-2', 'moderator');
+  assert.equal(await store.assignReport('moderator-2', 'missing-report', 'moderator-2'), false);
+  assert.equal((await store.submitAppeal('unrelated-user', 'missing-sanction', 'This appeal should not be accepted because the sanction is absent.')).error, 'not_found');
+  assert.equal((await store.reviewVerification('moderator-2', 'missing-user', 'verified')).error, 'forbidden');
+});

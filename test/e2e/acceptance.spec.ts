@@ -1,6 +1,5 @@
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 
-const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const password = 'correct-horse-battery';
 
 async function register(page: Page, email: string, displayName: string) {
@@ -23,6 +22,7 @@ async function login(page: Page, email: string) {
 }
 
 test('registration, profile persistence, and session continuity', async ({ page }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const email = `e2e-profile-${suffix}@example.com`;
   await register(page, email, 'E2E Traveler');
   const sessionCookie = (await page.context().cookies()).find((cookie) => cookie.name === 'tm_session');
@@ -41,6 +41,7 @@ test('registration, profile persistence, and session continuity', async ({ page 
 });
 
 test('organizer trip, join request, capacity, connection messaging, and admin protection', async ({ browser }) => {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const organizerEmail = `e2e-organizer-${suffix}@example.com`;
   const guestEmail = `e2e-guest-${suffix}@example.com`;
   const secondGuestEmail = `e2e-second-${suffix}@example.com`;
