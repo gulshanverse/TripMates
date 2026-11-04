@@ -163,6 +163,42 @@ integration('locks trip lifecycle and join approval in the same MySQL transactio
   } finally { await travel.close(); }
 });
 
+integration('serializes capacity edits with join approval without violating accepted-participant capacity', async () => {
+  process.env.NODE_ENV = 'test';
+  process.env.ALLOW_MEMORY_FALLBACK = 'false';
+  const travel = new TravelStore();
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await travel.initialize();
+    const owner = await travel.register(`mysql-capacity-owner-${suffix}@example.com`, 'correct-horse-battery', 'Capacity Owner');
+    const guestA = await travel.register(`mysql-capacity-a-${suffix}@example.com`, 'correct-horse-battery', 'Capacity Guest A');
+    const guestB = await travel.register(`mysql-capacity-b-${suffix}@example.com`, 'correct-horse-battery', 'Capacity Guest B');
+    assert.ok(owner && guestA && guestB);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const trip = await travel.createTrip(owner, { destinationId: 'rishikesh', title: `MySQL capacity race ${suffix}-${attempt}`, summary: 'Verifies capacity edits serialize with join approval.', startDate: 'Nov 01', endDate: 'Nov 03', duration: '3 days', budget: 9000, capacity: 3, style: 'Adventure', imageUrl: 'https://example.com/mysql-capacity-race.jpg' });
+      assert.ok(trip);
+      const first = await travel.requestJoin(trip.id, guestA.id);
+      const second = await travel.requestJoin(trip.id, guestB.id);
+      assert.ok('request' in first && 'request' in second);
+      assert.equal((await travel.updateJoinRequest(first.request.id, owner.id, 'approved')).request?.status, 'approved');
+
+      const [capacityEdit, approval] = await Promise.all([
+        travel.updateTrip(trip.id, owner, { capacity: 2 }),
+        travel.updateJoinRequest(second.request.id, owner.id, 'approved'),
+      ]);
+      const current = await travel.getTrip(trip.id);
+      assert.ok(current);
+      assert.ok(current.capacity >= current.members, `capacity ${current.capacity} fell below members ${current.members}`);
+      assert.equal(Boolean(capacityEdit) === ('request' in approval), false, 'exactly one concurrent operation must win');
+      if ('request' in approval) assert.equal(current.members, 3);
+      else assert.equal(approval.error, 'full');
+    }
+  } finally {
+    await travel.close();
+  }
+});
+
 integration('persists immutable completion evidence and permits one eligible organizer review', async () => {
   process.env.NODE_ENV = 'test';
   process.env.ALLOW_MEMORY_FALLBACK = 'false';

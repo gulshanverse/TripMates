@@ -125,12 +125,35 @@ export class TravelStore {
     if(patch.capacity!=null&&(!Number.isInteger(patch.capacity)||patch.capacity<1))return null;
     if(patch.minParticipants!=null&&(!Number.isInteger(patch.minParticipants)||patch.minParticipants<1))return null;
     if(this.pool){
-      const [currentRows]=await this.db().query<RowDataPacket[]>('SELECT members,capacity,min_participants FROM trips WHERE id=? AND organizer_user_id=? FOR UPDATE',[id,user.id]);
-      const current=currentRows[0];
-      if(!current)return null;
-      const capacity=patch.capacity??Number(current.capacity), minimum=patch.minParticipants??Number(current.min_participants);
-      if(minimum>capacity||capacity<Number(current.members))return null;
- const columns:Record<string,string>={title:'title',summary:'summary',startDate:'start_date',endDate:'end_date',duration:'duration',budget:'budget',capacity:'capacity',style:'style',minParticipants:'min_participants',meetingPoint:'meeting_point',preparationGuidance:'preparation_guidance',cancellationPolicy:'cancellation_policy',participationPolicy:'participation_policy'}; const jsonColumns:Record<string,string>={budgetBreakdown:'budget_breakdown',includedItems:'included_items',excludedItems:'excluded_items',requiredEquipment:'required_equipment',itinerary:'itinerary_details'}; const entries=Object.entries(patch).filter(([key])=>columns[key]||jsonColumns[key]); if(!entries.length)return null; const set=entries.map(([key])=>`${columns[key]||jsonColumns[key]}=?`).join(','); const values=entries.map(([key,value])=>jsonColumns[key]?j(value):value); const [result]=await this.db().query(`UPDATE trips SET ${set} WHERE id=? AND organizer_user_id=?`,[...values,id,user.id]); if((result as {affectedRows:number}).affectedRows!==1)return null; const [participants]=await this.db().query<RowDataPacket[]>('SELECT user_id FROM trip_participants WHERE trip_id=? AND user_id<>?',[id,user.id]); for(const participant of participants)await this.notify(String(participant.user_id),'trip_updated','A trip you joined was updated',user.id,id,`trip-updated:${id}:${JSON.stringify(patch)}`); return {id,...patch}; } const t=trips.find(x=>x.id===id) as (Trip&{organizerUserId?:string})|undefined; if(!this.memory||!t||t.organizerUserId!==user.id)return null; const capacity=patch.capacity??t.capacity, minimum=patch.minParticipants??t.minParticipants??1; if(minimum>capacity||capacity<t.members)return null; Object.assign(t,patch); return t; }
+      const connection=await this.db().getConnection();
+      try{
+        await connection.beginTransaction();
+        const [currentRows]=await connection.query<RowDataPacket[]>('SELECT members,capacity,min_participants FROM trips WHERE id=? AND organizer_user_id=? FOR UPDATE',[id,user.id]);
+        const current=currentRows[0];
+        if(!current){await connection.rollback();return null;}
+        const [participants]=await connection.query<RowDataPacket[]>('SELECT user_id FROM trip_participants WHERE trip_id=? FOR UPDATE',[id]);
+        const capacity=patch.capacity??Number(current.capacity), minimum=patch.minParticipants??Number(current.min_participants);
+        const acceptedParticipants=Math.max(Number(current.members),participants.length+1);
+        if(minimum>capacity||capacity<acceptedParticipants){await connection.rollback();return null;}
+        const columns:Record<string,string>={title:'title',summary:'summary',startDate:'start_date',endDate:'end_date',duration:'duration',budget:'budget',capacity:'capacity',style:'style',minParticipants:'min_participants',meetingPoint:'meeting_point',preparationGuidance:'preparation_guidance',cancellationPolicy:'cancellation_policy',participationPolicy:'participation_policy'};
+        const jsonColumns:Record<string,string>={budgetBreakdown:'budget_breakdown',includedItems:'included_items',excludedItems:'excluded_items',requiredEquipment:'required_equipment',itinerary:'itinerary_details'};
+        const entries=Object.entries(patch).filter(([key])=>columns[key]||jsonColumns[key]);
+        if(!entries.length){await connection.rollback();return null;}
+        const set=entries.map(([key])=>`${columns[key]||jsonColumns[key]}=?`).join(',');
+        const values=entries.map(([key,value])=>jsonColumns[key]?j(value):value);
+        const [result]=await connection.query(`UPDATE trips SET ${set} WHERE id=? AND organizer_user_id=?`,[...values,id,user.id]);
+        if((result as {affectedRows:number}).affectedRows!==1){await connection.rollback();return null;}
+        await connection.commit();
+        for(const participant of participants)await this.notify(String(participant.user_id),'trip_updated','A trip you joined was updated',user.id,id,`trip-updated:${id}:${JSON.stringify(patch)}`);
+        return {id,...patch};
+      }catch(error){try{await connection.rollback();}catch{}throw error;}finally{connection.release();}
+    }
+    const t=trips.find(x=>x.id===id) as (Trip&{organizerUserId?:string})|undefined;
+    if(!this.memory||!t||t.organizerUserId!==user.id)return null;
+    const capacity=patch.capacity??t.capacity, minimum=patch.minParticipants??t.minParticipants??1;
+    if(minimum>capacity||capacity<t.members)return null;
+    Object.assign(t,patch); return t;
+  }
   async transitionTrip(id:string,userId:string,status:TripStatus){
     if(!this.pool){
       const t=trips.find(x=>x.id===id) as Trip&{organizerUserId?:string}|undefined;
