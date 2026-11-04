@@ -101,3 +101,30 @@ test('pending approval is rejected after a trip completes or is cancelled', asyn
   assert.equal((await store.transitionTrip(cancelledTrip.id, owner.id, 'cancelled')).status, 'cancelled');
   assert.equal((await store.updateJoinRequest(cancelledRequest.request.id, owner.id, 'approved')).error, 'unavailable');
 });
+
+
+test('saved trips use authoritative organizer records and remain user-private', async () => {
+  const store = await readyStore();
+  const owner = await user(store, 'saved-owner@example.com', 'Saved Owner');
+  const traveller = await user(store, 'saved-traveller@example.com', 'Saved Traveller');
+  const other = await user(store, 'saved-other@example.com', 'Saved Other');
+  const trip = await store.createTrip(owner, { destinationId: 'rishikesh', title: 'Persisted organizer trip', summary: 'A published trip that should be available to save.', startDate: 'Mar 01', endDate: 'Mar 03', duration: '3 days', budget: 9000, capacity: 4, style: 'Adventure', imageUrl: 'https://example.com/saved.jpg' });
+  assert.ok(trip);
+  assert.equal((await store.saveTrip(trip.id, traveller.id, traveller.id)).saved, true);
+  assert.equal((await store.saveTrip(trip.id, traveller.id, traveller.id)).error, 'duplicate');
+  assert.equal((await store.listSavedTrips(traveller.id)).some((item) => item.id === trip.id), true);
+  assert.equal((await store.listSavedTrips(other.id)).some((item) => item.id === trip.id), false);
+  assert.equal(await store.unsaveTrip(trip.id, traveller.id, traveller.id), true);
+  assert.equal((await store.listSavedTrips(traveller.id)).some((item) => item.id === trip.id), false);
+});
+
+test('capacity and minimum participant invariants reject invalid create and update operations', async () => {
+  const store = await readyStore();
+  const owner = await user(store, 'capacity-owner@example.com', 'Capacity Owner');
+  assert.equal(await store.createTrip(owner, { destinationId: 'rishikesh', title: 'Invalid capacity', summary: 'This should not be persisted because the limits are invalid.', startDate: 'Apr 01', endDate: 'Apr 03', duration: '3 days', budget: 9000, capacity: 1, minParticipants: 2, style: 'Adventure', imageUrl: 'https://example.com/capacity.jpg' }), null);
+  const trip = await store.createTrip(owner, { destinationId: 'rishikesh', title: 'Valid capacity', summary: 'This trip has valid participant limits.', startDate: 'Apr 01', endDate: 'Apr 03', duration: '3 days', budget: 9000, capacity: 3, minParticipants: 2, style: 'Adventure', imageUrl: 'https://example.com/capacity-valid.jpg' });
+  assert.ok(trip);
+  assert.equal(await store.updateTrip(trip.id, owner, { capacity: 0 }), null);
+  assert.equal(await store.updateTrip(trip.id, owner, { capacity: 1 }), null);
+  assert.equal((await store.updateTrip(trip.id, owner, { capacity: 5 }))?.capacity, 5);
+});

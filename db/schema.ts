@@ -38,9 +38,10 @@ export const trips = mysqlTable('trips', {
 export const savedTrips = mysqlTable('saved_trips', {
   id: int('id').autoincrement().primaryKey(),
   visitorId: varchar('visitor_id', { length: 128 }).notNull(),
+  userId: varchar('user_id', { length: 36 }),
   tripId: varchar('trip_id', { length: 64 }).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-}, (table) => ({ visitorTripUnique: uniqueIndex('saved_trips_visitor_trip_unique').on(table.visitorId, table.tripId) }));
+}, (table) => ({ visitorTripUnique: uniqueIndex('saved_trips_visitor_trip_unique').on(table.visitorId, table.tripId), userTripUnique: uniqueIndex('saved_trips_user_trip_unique').on(table.userId, table.tripId), userIdx: index('saved_trips_user_idx').on(table.userId) }));
 
 export const buddyInterests = mysqlTable('buddy_interests', {
   id: int('id').autoincrement().primaryKey(),

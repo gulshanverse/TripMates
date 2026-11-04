@@ -31,6 +31,10 @@ pnpm db:seed
 
 `pnpm db:push` applies all ordered SQL migrations exactly once through the `schema_migrations` table. Configure a real email provider before enabling verification or reset delivery; `EMAIL_PROVIDER=disabled` is the safe default and no tokens are exposed by the application.
 
+### First super-admin provisioning
+
+The application never promotes an account during ordinary startup and exposes no public super-admin creation endpoint. In an isolated deployment or maintenance shell, set `DATABASE_URL`, `SUPER_ADMIN_EMAIL`, a high-entropy `SUPER_ADMIN_PROVISIONING_SECRET`, and `SUPER_ADMIN_PROVISIONING_CONFIRMATION=PROVISION_SUPER_ADMIN`, then run `pnpm provision:super-admin`. The command is transactional, idempotent, refuses to replace an existing super-admin, verifies that the target account exists and is active, and records an audit event without logging the secret. Rotate the provisioning secret immediately after successful use and store it only in the deployment secret manager. Emergency recovery requires a separately authorized database-maintenance window and must preserve the same audit trail; ordinary administrators cannot self-promote.
+
 ## Messaging and notifications
 
 Migration `0004_messaging_notifications.sql` adds conversations, participants, messages, read states, notifications, and blocks. A conversation is created only by an authenticated participant; duplicate participant rows are rejected by the composite primary key. Connection conversations are intended for mutually accepted travel connections, while trip conversations remain a separate kind. No conversation is created for Travel Dates or romantic consent.
