@@ -86,6 +86,8 @@ integration('persists core journeys and enforces MySQL authorization and capacit
   const guestRequest = await travel.requestJoin(trip.id, guest.id);
   const otherRequest = await travel.requestJoin(trip.id, other.id);
   assert.ok('request' in guestRequest && 'request' in otherRequest);
+  const incomingRequests = await travel.listJoinRequests(owner.id, true);
+  assert.equal(incomingRequests.find((request) => request.id === guestRequest.request.id)?.applicantName, 'MySQL Guest');
   const approvals = await Promise.all([
     travel.updateJoinRequest(guestRequest.request.id, owner.id, 'approved'),
     travel.updateJoinRequest(otherRequest.request.id, owner.id, 'approved'),
