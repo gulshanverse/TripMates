@@ -1,4 +1,4 @@
-# TripMates : Smart Travel & Dating Platform 
+# TripMates : AI-POWERED Smart Travel & Dating Platform 
 
 TripMates is an India-first travel social discovery platform: find better-fit companions, discover thoughtful group trips, and connect naturally through shared travel experiences.
 
